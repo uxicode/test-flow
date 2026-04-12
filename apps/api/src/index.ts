@@ -544,19 +544,169 @@ fastify.post("/api/tc/convert", async (req, reply) => {
 // --- 녹화 ---
 
 fastify.post("/api/sessions/record", async (req, reply) => {
-  const body = (req.body ?? {}) as { url?: string; mode?: "codegen" | "hosted" };
+  const body = (req.body ?? {}) as {
+    url?: string;
+    mode?: "codegen" | "hosted";
+    scenarioId?: string;
+  };
   const url = body.url ?? "";
   const mode = body.mode ?? "hosted";
+  if (body.scenarioId) {
+    const exists = await getScenario(scenariosDir, body.scenarioId);
+    if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
+  }
   const result =
     mode === "hosted"
-      ? await startHostedRecordSession(playwrightRunnerDir, recordingsDir, url)
+      ? await startHostedRecordSession(playwrightRunnerDir, recordingsDir, url, {
+          scenarioId: body.scenarioId,
+        })
       : await startCodegenSession(playwrightRunnerDir, recordingsDir, url);
   if ("error" in result) return reply.code(400).send(result);
   return result;
 });
 
+async function mergeRecordingMetaOnStop(
+  sessionId: string,
+  bodyScenarioId?: string,
+): Promise<void> {
+  if (!isSafeRunId(sessionId)) return;
+  const dir = path.join(recordingsDir, sessionId);
+  const metaPath = path.join(dir, "recording.json");
+  let meta: Record<string, unknown> = {};
+  try {
+    const raw = await fs.readFile(metaPath, "utf8");
+    meta = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    meta = { startedAt: new Date().toISOString() };
+  }
+  if (bodyScenarioId && (meta.scenarioId == null || meta.scenarioId === "")) {
+    meta.scenarioId = bodyScenarioId;
+  }
+  meta.stoppedAt = new Date().toISOString();
+  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
+}
+
+interface RecordingListItem {
+  sessionId: string;
+  kind: "hosted";
+  scenarioId: string | null;
+  startedAt: string;
+  stoppedAt?: string;
+  videoUrl: string;
+  stepsJsonUrl: string;
+  smartTcJsonUrl: string;
+}
+
+interface RecordingMetaFile {
+  scenarioId?: string | null;
+  startedAt?: string;
+  stoppedAt?: string;
+}
+
+async function legacyRecordingMatchesScenario(
+  sessionId: string,
+  scenarioId: string,
+): Promise<boolean> {
+  const metaPath = path.join(recordingsDir, sessionId, "recording.json");
+  try {
+    await fs.access(metaPath);
+    return false;
+  } catch {
+    /* no recording.json — may be 구버전 폴더 */
+  }
+  let fileSteps: Step[] = [];
+  try {
+    const raw = await fs.readFile(
+      path.join(recordingsDir, sessionId, "steps.json"),
+      "utf8",
+    );
+    fileSteps = JSON.parse(raw) as Step[];
+  } catch {
+    return false;
+  }
+  const s = await getScenario(scenariosDir, scenarioId);
+  if (!s || s.mode !== "builder" || s.steps.length === 0) return false;
+  return JSON.stringify(s.steps) === JSON.stringify(fileSteps);
+}
+
+async function listRecordingsForScenario(
+  scenarioId: string,
+): Promise<RecordingListItem[]> {
+  let entries;
+  try {
+    entries = await fs.readdir(recordingsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: RecordingListItem[] = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const sessionId = e.name;
+    if (!isSafeRunId(sessionId)) continue;
+    const metaPath = path.join(recordingsDir, sessionId, "recording.json");
+    let meta: RecordingMetaFile | null = null;
+    try {
+      const raw = await fs.readFile(metaPath, "utf8");
+      meta = JSON.parse(raw) as RecordingMetaFile;
+    } catch {
+      meta = null;
+    }
+
+    let include = false;
+    if (meta && meta.scenarioId === scenarioId) include = true;
+    else if (!meta && (await legacyRecordingMatchesScenario(sessionId, scenarioId)))
+      include = true;
+    if (!include) continue;
+
+    const base = `/api/recordings/${sessionId}`;
+    let videoUrl = "";
+    try {
+      const videoDir = path.join(recordingsDir, sessionId, "video");
+      const names = await fs.readdir(videoDir);
+      const webm = names.find((n) => n.toLowerCase().endsWith(".webm"));
+      if (webm) videoUrl = `${base}/video/${webm}`;
+    } catch {
+      /* no video */
+    }
+
+    let startedAt = meta?.startedAt ?? new Date(0).toISOString();
+    if (!meta?.startedAt) {
+      try {
+        const st = await fs.stat(path.join(recordingsDir, sessionId, "steps.json"));
+        startedAt = st.mtime.toISOString();
+      } catch {
+        /* keep default */
+      }
+    }
+
+    out.push({
+      sessionId,
+      kind: "hosted",
+      scenarioId: meta?.scenarioId ?? scenarioId,
+      startedAt,
+      stoppedAt: meta?.stoppedAt,
+      videoUrl,
+      stepsJsonUrl: `${base}/steps.json`,
+      smartTcJsonUrl: `${base}/smartTc.json`,
+    });
+  }
+  out.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+  return out;
+}
+
+fastify.get("/api/recordings", async (req, reply) => {
+  const scenarioId = (req.query as { scenarioId?: string }).scenarioId;
+  if (typeof scenarioId !== "string" || scenarioId === "") {
+    return reply.code(400).send({ error: "scenarioId_required" });
+  }
+  const exists = await getScenario(scenariosDir, scenarioId);
+  if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
+  return await listRecordingsForScenario(scenarioId);
+});
+
 fastify.post("/api/sessions/:sessionId/stop", async (req, reply) => {
   const { sessionId } = req.params as { sessionId: string };
+  const stopBody = (req.body ?? {}) as { scenarioId?: string };
   const codegenResult = await stopCodegenSession(sessionId, recordingsDir);
   if (!("error" in codegenResult)) {
     const { steps, warnings } = codegenScriptToSteps(codegenResult.script);
@@ -571,9 +721,13 @@ fastify.post("/api/sessions/:sessionId/stop", async (req, reply) => {
   }
   const hosted = await stopHostedRecordSession(sessionId, recordingsDir);
   if (!("error" in hosted)) {
+    await mergeRecordingMetaOnStop(sessionId, stopBody.scenarioId);
+    const smartTc = stepsToSmartTC(hosted.steps);
+    const smartPath = path.join(recordingsDir, sessionId, "smartTc.json");
+    await fs.writeFile(smartPath, JSON.stringify(smartTc, null, 2), "utf8");
     return {
       ...hosted,
-      smartTc: stepsToSmartTC(hosted.steps),
+      smartTc,
     };
   }
   return reply.code(400).send({
@@ -589,6 +743,22 @@ fastify.get("/api/recordings/:sessionId/*", async (req, reply) => {
   const filePath = path.resolve(base, safe);
   if (!filePath.startsWith(base + path.sep) && filePath !== base)
     return reply.code(400).send({ error: "invalid_path" });
+
+  if (safe === "smartTc.json" || safe.endsWith("/smartTc.json")) {
+    try {
+      await fs.access(filePath);
+    } catch {
+      try {
+        const raw = await fs.readFile(path.join(base, "steps.json"), "utf8");
+        const steps = JSON.parse(raw) as Step[];
+        const tc = stepsToSmartTC(steps);
+        await fs.writeFile(filePath, JSON.stringify(tc, null, 2), "utf8");
+      } catch {
+        /* 404 below */
+      }
+    }
+  }
+
   try {
     const stat = await fs.stat(filePath);
     if (stat.isDirectory()) return reply.code(404).send({ error: "not_found" });

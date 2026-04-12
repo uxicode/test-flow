@@ -56,6 +56,7 @@ export async function startHostedRecordSession(
   playwrightRunnerRoot: string,
   recordingsDir: string,
   url: string,
+  options?: { scenarioId?: string },
 ): Promise<{ sessionId: string } | { error: string }> {
   const trimmed = url.trim();
   if (!trimmed) return { error: "url_required" };
@@ -64,6 +65,20 @@ export async function startHostedRecordSession(
   const sessionId = randomUUID();
   const sessionDir = path.join(recordingsDir, sessionId);
   await fs.mkdir(sessionDir, { recursive: true });
+
+  const startedAt = new Date().toISOString();
+  await fs.writeFile(
+    path.join(sessionDir, "recording.json"),
+    JSON.stringify(
+      {
+        scenarioId: options?.scenarioId ?? null,
+        startedAt,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
 
   const recordHost = path.join(playwrightRunnerRoot, "src", "recordHost.ts");
   const logPath = path.join(sessionDir, "recordHost.log");

@@ -243,7 +243,11 @@ export default function App() {
       const res = await fetchJson<{ sessionId: string }>("/api/sessions/record", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: recordUrl, mode: "hosted" }),
+        body: JSON.stringify({
+          url: recordUrl,
+          mode: "hosted",
+          scenarioId: draft?.id,
+        }),
       });
       setRecordingSessionId(res.sessionId);
       setIsRecording(true);
@@ -260,6 +264,8 @@ export default function App() {
     try {
       const res = await fetch(`/api/sessions/${recordingSessionId}/stop`, {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scenarioId: draft?.id }),
       });
       const body = (await res.json()) as RecordingStopBody;
       if (!res.ok || body.error) {
@@ -318,6 +324,7 @@ export default function App() {
     } finally {
       setRecordingSessionId(null);
       setIsRecording(false);
+      setHistoryRefreshTick((n) => n + 1);
     }
   }
 
