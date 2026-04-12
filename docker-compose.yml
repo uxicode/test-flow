@@ -1,0 +1,8 @@
+# 선택: CI 또는 수동 컨테이너 실행용 Playwright 러너 이미지.
+# TestFlow 앱은 호스트의 로컬 Playwright로 테스트를 실행하며(Docker 불필요).
+services:
+  runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.runner
+    image: testflow-runner:latest

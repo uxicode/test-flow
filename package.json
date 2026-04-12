@@ -1,0 +1,17 @@
+{
+  "name": "testflow",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --parallel --filter @testflow/api --filter @testflow/web dev",
+    "build": "pnpm -r build",
+    "test": "pnpm --filter @testflow/api test",
+    "lint": "pnpm -r lint",
+    "electron:dev": "pnpm --filter @testflow/web build && pnpm --filter @testflow/api build && pnpm --filter @testflow/desktop dev",
+    "electron:pack": "pnpm --filter @testflow/web build && pnpm --filter @testflow/api build && pnpm --filter @testflow/desktop build && pnpm --filter @testflow/desktop pack",
+    "electron:build": "pnpm --filter @testflow/web build && pnpm --filter @testflow/api build && pnpm --filter @testflow/desktop build && pnpm --filter @testflow/desktop dist"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

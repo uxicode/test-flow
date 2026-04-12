@@ -1,0 +1,619 @@
+import cors from "@fastify/cors";
+import staticPlugin from "@fastify/static";
+import websocket from "@fastify/websocket";
+import Fastify from "fastify";
+import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
+import type { Step } from "./scenarioStore.js";
+import {
+  createScenario,
+  deleteScenario,
+  ensureScenariosDir,
+  getScenario,
+  listScenarios,
+  updateScenario,
+} from "./scenarioStore.js";
+import { generateSpec } from "./specGenerator.js";
+import { codegenScriptToSteps } from "./codegenToSteps.js";
+import { stepsToSmartTC } from "./tcGenerator.js";
+import {
+  startCodegenSession,
+  startHostedRecordSession,
+  stopCodegenSession,
+  stopHostedRecordSession,
+} from "./recordingSessions.js";
+
+// ---------------------------------------------------------------------------
+// 구성
+// ---------------------------------------------------------------------------
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot =
+  process.env.TESTFLOW_REPO_ROOT ??
+  path.resolve(__dirname, "..", "..", "..");
+const dataRunsRoot =
+  process.env.TESTFLOW_DATA_DIR ?? path.join(repoRoot, "data", "runs");
+const scenariosDir =
+  process.env.TESTFLOW_SCENARIOS_DIR ?? path.join(repoRoot, "data", "scenarios");
+const recordingsDir =
+  process.env.TESTFLOW_RECORDINGS_DIR ?? path.join(repoRoot, "data", "recordings");
+const playwrightRunnerDir =
+  process.env.TESTFLOW_PLAYWRIGHT_RUNNER_DIR ??
+  path.join(repoRoot, "packages", "playwright-runner");
+const webDistDir =
+  process.env.TESTFLOW_WEB_DIST_DIR ??
+  path.join(repoRoot, "apps", "web", "dist");
+const playwrightConfigPath = path.join(
+  playwrightRunnerDir,
+  "playwright.config.ts",
+);
+
+// ---------------------------------------------------------------------------
+// 실행 상태
+// ---------------------------------------------------------------------------
+
+type RunStatus = "queued" | "running" | "passed" | "failed" | "error";
+
+interface RunRecord {
+  id: string;
+  status: RunStatus;
+  log: string;
+  exitCode: number | null;
+  errorMessage?: string;
+  startedAt: string;
+  finishedAt?: string;
+}
+
+const runs = new Map<string, RunRecord>();
+const subscribers = new Map<string, Set<(payload: string) => void>>();
+
+function getRunArtifactsDir(runId: string): string {
+  return path.join(dataRunsRoot, runId);
+}
+
+function subscribe(runId: string, send: (payload: string) => void): () => void {
+  let set = subscribers.get(runId);
+  if (!set) {
+    set = new Set();
+    subscribers.set(runId, set);
+  }
+  set.add(send);
+  return () => {
+    set!.delete(send);
+    if (set!.size === 0) subscribers.delete(runId);
+  };
+}
+
+function broadcast(runId: string, payload: object): void {
+  const line = JSON.stringify(payload);
+  for (const fn of subscribers.get(runId) ?? []) fn(line);
+}
+
+function appendLog(runId: string, chunk: string): void {
+  const run = runs.get(runId);
+  if (!run) return;
+  run.log += chunk;
+  broadcast(runId, { type: "log", chunk });
+}
+
+// ---------------------------------------------------------------------------
+// 실행 요청에 대한 spec 해석
+// ---------------------------------------------------------------------------
+
+async function resolveSpecContent(body: {
+  scenarioId?: string;
+  steps?: Step[];
+  rawScript?: string;
+}): Promise<string | undefined> {
+  // 저장되지 않은 편집: 인라인 에디터 내용이 저장된 시나리오보다 우선
+  if (typeof body.rawScript === "string" && body.rawScript.trim() !== "")
+    return body.rawScript;
+
+  if (Array.isArray(body.steps) && body.steps.length > 0)
+    return generateSpec(body.steps);
+
+  if (body.scenarioId) {
+    const s = await getScenario(scenariosDir, body.scenarioId);
+    if (!s) return undefined;
+    if (s.mode === "script" && s.rawScript.trim() !== "") return s.rawScript;
+    if (s.steps.length > 0) return generateSpec(s.steps);
+    return undefined;
+  }
+
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// 헬퍼
+// ---------------------------------------------------------------------------
+
+async function ensureDir(dir: string): Promise<void> {
+  await fs.mkdir(dir, { recursive: true });
+}
+
+function guessContentType(filePath: string): string {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".html")) return "text/html; charset=utf-8";
+  if (lower.endsWith(".json")) return "application/json";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".zip")) return "application/zip";
+  return "application/octet-stream";
+}
+
+function resolveArtifactPath(runId: string, relative: string): string | null {
+  const base = path.resolve(getRunArtifactsDir(runId));
+  const resolved = path.resolve(base, relative);
+  if (!resolved.startsWith(base + path.sep) && resolved !== base) return null;
+  return resolved;
+}
+
+const MAX_SCREENSHOT_URLS = 24;
+const MAX_VIDEO_URLS = 8;
+
+/** 실행 산출물 루트 기준 .png 상대 경로 수집(UI 미리보기용). */
+async function collectScreenshotRelPaths(runId: string): Promise<string[]> {
+  const root = path.resolve(getRunArtifactsDir(runId));
+  const collected: string[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    if (collected.length >= MAX_SCREENSHOT_URLS) return;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (collected.length >= MAX_SCREENSHOT_URLS) return;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (e.isFile() && e.name.toLowerCase().endsWith(".png")) {
+        const rel = path.relative(root, full);
+        const norm = rel.split(path.sep).join("/");
+        if (!norm.startsWith("..") && norm.length > 0) collected.push(norm);
+      }
+    }
+  }
+
+  const testResults = path.join(root, "test-results");
+  try {
+    await fs.access(testResults);
+    await walk(testResults);
+  } catch {
+    /* 아직 폴더 없음 */
+  }
+
+  collected.sort();
+  return collected;
+}
+
+/** 실행 산출물 루트 기준 .webm 상대 경로 수집. */
+async function collectVideoRelPaths(runId: string): Promise<string[]> {
+  const root = path.resolve(getRunArtifactsDir(runId));
+  const collected: string[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    if (collected.length >= MAX_VIDEO_URLS) return;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (collected.length >= MAX_VIDEO_URLS) return;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (e.isFile() && e.name.toLowerCase().endsWith(".webm")) {
+        const rel = path.relative(root, full);
+        const norm = rel.split(path.sep).join("/");
+        if (!norm.startsWith("..") && norm.length > 0) collected.push(norm);
+      }
+    }
+  }
+
+  const testResults = path.join(root, "test-results");
+  try {
+    await fs.access(testResults);
+    await walk(testResults);
+  } catch {
+    /* 폴더 없음 */
+  }
+
+  collected.sort();
+  return collected;
+}
+
+// ---------------------------------------------------------------------------
+// 로컬 Playwright 실행 (Docker 없음)
+// ---------------------------------------------------------------------------
+
+async function executeRun(runId: string, specContent?: string): Promise<void> {
+  const run = runs.get(runId);
+  if (!run) return;
+
+  const hostArtifacts = getRunArtifactsDir(runId);
+  await ensureDir(hostArtifacts);
+  await ensureDir(path.join(hostArtifacts, "test-results"));
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ARTIFACTS_DIR: hostArtifacts,
+    TESTFLOW_RUN_VIDEO: "always",
+  };
+
+  if (specContent) {
+    await fs.writeFile(
+      path.join(hostArtifacts, "scenario.spec.ts"),
+      specContent,
+      "utf8",
+    );
+    env.TEST_DIR = hostArtifacts;
+  }
+
+  run.status = "running";
+  broadcast(runId, { type: "status", status: run.status });
+
+  const args = ["playwright", "test", "--config", playwrightConfigPath];
+
+  try {
+    await new Promise<void>((resolve) => {
+      const child = spawn("npx", args, {
+        cwd: playwrightRunnerDir,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: process.platform === "win32",
+      });
+
+      child.stdout?.on("data", (buf: Buffer) => {
+        appendLog(runId, buf.toString("utf8"));
+      });
+      child.stderr?.on("data", (buf: Buffer) => {
+        appendLog(runId, buf.toString("utf8"));
+      });
+
+      child.on("error", (err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        run.status = "error";
+        run.exitCode = null;
+        run.errorMessage = message;
+        run.finishedAt = new Date().toISOString();
+        appendLog(runId, `\n[testflow] ${message}\n`);
+        broadcast(runId, {
+          type: "complete",
+          status: run.status,
+          errorMessage: message,
+        });
+        resolve();
+      });
+
+      child.on("exit", (code, signal) => {
+        if (signal)
+          appendLog(runId, `\n[testflow] child exited with signal ${signal}\n`);
+        const exitCode = code === null ? -1 : code;
+        run.exitCode = exitCode;
+        run.status = exitCode === 0 ? "passed" : "failed";
+        run.finishedAt = new Date().toISOString();
+        broadcast(runId, { type: "complete", status: run.status, exitCode });
+        resolve();
+      });
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    run.status = "error";
+    run.exitCode = null;
+    run.errorMessage = message;
+    run.finishedAt = new Date().toISOString();
+    appendLog(runId, `\n[testflow] ${message}\n`);
+    broadcast(runId, { type: "complete", status: run.status, errorMessage: message });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fastify 서버
+// ---------------------------------------------------------------------------
+
+const fastify = Fastify({ logger: true });
+
+let appPrepared = false;
+
+async function prepareApp(): Promise<void> {
+  if (appPrepared) return;
+
+  await ensureScenariosDir(scenariosDir);
+  await fs.mkdir(recordingsDir, { recursive: true });
+
+  await fastify.register(cors, { origin: true });
+  await fastify.register(websocket);
+
+  fastify.get("/health", async () => ({ ok: true }));
+
+// --- 시나리오 CRUD ---
+
+fastify.get("/api/scenarios", async () => {
+  return await listScenarios(scenariosDir);
+});
+
+fastify.post("/api/scenarios", async (req, reply) => {
+  const body = (req.body ?? {}) as {
+    name?: string;
+    mode?: "builder" | "script";
+    steps?: Step[];
+    rawScript?: string;
+  };
+  const scenario = await createScenario(scenariosDir, {
+    name: body.name ?? "New scenario",
+    mode: body.mode,
+    steps: body.steps,
+    rawScript: body.rawScript,
+  });
+  return reply.code(201).send(scenario);
+});
+
+fastify.get("/api/scenarios/:id", async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const scenario = await getScenario(scenariosDir, id);
+  if (!scenario) return reply.code(404).send({ error: "not_found" });
+  return scenario;
+});
+
+fastify.put("/api/scenarios/:id", async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const body = (req.body ?? {}) as Partial<{
+    name: string;
+    mode: "builder" | "script";
+    steps: Step[];
+    rawScript: string;
+  }>;
+  const updated = await updateScenario(scenariosDir, id, body);
+  if (!updated) return reply.code(404).send({ error: "not_found" });
+  return updated;
+});
+
+fastify.delete("/api/scenarios/:id", async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const ok = await deleteScenario(scenariosDir, id);
+  if (!ok) return reply.code(404).send({ error: "not_found" });
+  return reply.code(204).send();
+});
+
+// GET /api/scenarios/:id/tc — 시나리오 스텝을 SmartTC JSON으로 반환
+fastify.get("/api/scenarios/:id/tc", async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const scenario = await getScenario(scenariosDir, id);
+  if (!scenario) return reply.code(404).send({ error: "not_found" });
+  if (scenario.mode !== "builder" || scenario.steps.length === 0) {
+    return reply.code(400).send({ error: "no_steps", message: "builder 모드에 스텝이 있어야 합니다." });
+  }
+  const tc = stepsToSmartTC(scenario.steps);
+  return {
+    scenarioId: scenario.id,
+    scenarioName: scenario.name,
+    totalSteps: tc.length,
+    tc,
+  };
+});
+
+// POST /api/tc/convert — 임의 스텝 배열을 SmartTC로 변환 (빌더 없이 바로 변환)
+fastify.post("/api/tc/convert", async (req, reply) => {
+  const body = (req.body ?? {}) as { steps?: Step[] };
+  if (!Array.isArray(body.steps) || body.steps.length === 0) {
+    return reply.code(400).send({ error: "steps_required" });
+  }
+  const tc = stepsToSmartTC(body.steps);
+  return { totalSteps: tc.length, tc };
+});
+
+// --- 녹화 ---
+
+fastify.post("/api/sessions/record", async (req, reply) => {
+  const body = (req.body ?? {}) as { url?: string; mode?: "codegen" | "hosted" };
+  const url = body.url ?? "";
+  const mode = body.mode ?? "hosted";
+  const result =
+    mode === "hosted"
+      ? await startHostedRecordSession(playwrightRunnerDir, recordingsDir, url)
+      : await startCodegenSession(playwrightRunnerDir, recordingsDir, url);
+  if ("error" in result) return reply.code(400).send(result);
+  return result;
+});
+
+fastify.post("/api/sessions/:sessionId/stop", async (req, reply) => {
+  const { sessionId } = req.params as { sessionId: string };
+  const codegenResult = await stopCodegenSession(sessionId, recordingsDir);
+  if (!("error" in codegenResult)) {
+    const { steps, warnings } = codegenScriptToSteps(codegenResult.script);
+    return {
+      script: codegenResult.script,
+      steps,
+      smartTc: stepsToSmartTC(steps),
+      parseWarnings: warnings,
+      sessionKind: "codegen" as const,
+      sessionArtifacts: { videoUrl: "", traceUrl: "" },
+    };
+  }
+  const hosted = await stopHostedRecordSession(sessionId, recordingsDir);
+  if (!("error" in hosted)) {
+    return {
+      ...hosted,
+      smartTc: stepsToSmartTC(hosted.steps),
+    };
+  }
+  return reply.code(400).send({
+    error: `${codegenResult.error}; ${hosted.error}`,
+  });
+});
+
+fastify.get("/api/recordings/:sessionId/*", async (req, reply) => {
+  const { sessionId } = req.params as { sessionId: string; "*": string };
+  const wildcard = (req.params as Record<string, string>)["*"] ?? "";
+  const base = path.resolve(recordingsDir, sessionId);
+  const safe = path.normalize(wildcard).replace(/^(\.\.(\/|\\|$))+/, "");
+  const filePath = path.resolve(base, safe);
+  if (!filePath.startsWith(base + path.sep) && filePath !== base)
+    return reply.code(400).send({ error: "invalid_path" });
+  try {
+    const stat = await fs.stat(filePath);
+    if (stat.isDirectory()) return reply.code(404).send({ error: "not_found" });
+    reply.header("content-type", guessContentType(filePath));
+    return reply.send(createReadStream(filePath));
+  } catch {
+    return reply.code(404).send({ error: "not_found" });
+  }
+});
+
+// --- 실행(runs) ---
+
+fastify.post("/api/runs", async (req, reply) => {
+  const body = (req.body ?? {}) as {
+    scenarioId?: string;
+    steps?: Step[];
+    rawScript?: string;
+  };
+
+  if (body.scenarioId) {
+    const exists = await getScenario(scenariosDir, body.scenarioId);
+    if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
+  }
+
+  const specContent = await resolveSpecContent(body);
+
+  const runId = randomUUID();
+  const run: RunRecord = {
+    id: runId,
+    status: "queued",
+    log: "",
+    exitCode: null,
+    startedAt: new Date().toISOString(),
+  };
+  runs.set(runId, run);
+
+  void executeRun(runId, specContent);
+
+  return reply.code(202).send({ runId });
+});
+
+fastify.get("/api/runs/:runId", async (req, reply) => {
+  const { runId } = req.params as { runId: string };
+  const run = runs.get(runId);
+  if (!run) return reply.code(404).send({ error: "not_found" });
+  const base = `/api/runs/${runId}/artifacts`;
+  const relPngs = await collectScreenshotRelPaths(runId);
+  const screenshotUrls = relPngs.map((rel) => `${base}/${rel}`);
+  const relWebms = await collectVideoRelPaths(runId);
+  const videoUrls = relWebms.map((rel) => `${base}/${rel}`);
+  return {
+    id: run.id,
+    status: run.status,
+    exitCode: run.exitCode,
+    errorMessage: run.errorMessage,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    log: run.log,
+    artifacts: {
+      reportIndex: `${base}/playwright-report/index.html`,
+      testResultsDir: `${base}/test-results`,
+      screenshotUrls,
+      videoUrls,
+    },
+  };
+});
+
+fastify.get("/api/runs/:runId/artifacts/*", async (req, reply) => {
+  const { runId } = req.params as { runId: string; "*": string };
+  const wildcard = (req.params as Record<string, string>)["*"] ?? "";
+  const safe = path.normalize(wildcard).replace(/^(\.\.(\/|\\|$))+/, "");
+  const filePath = resolveArtifactPath(runId, safe);
+  if (!filePath) return reply.code(400).send({ error: "invalid_path" });
+
+  try {
+    const stat = await fs.stat(filePath);
+    if (stat.isDirectory()) return reply.code(404).send({ error: "not_found" });
+    reply.header("content-type", guessContentType(filePath));
+    return reply.send(createReadStream(filePath));
+  } catch {
+    return reply.code(404).send({ error: "not_found" });
+  }
+});
+
+fastify.get("/ws/runs/:runId", { websocket: true }, (socket, req) => {
+  const { runId } = req.params as { runId: string };
+  const run = runs.get(runId);
+  if (!run) {
+    socket.close(1008, "unknown_run");
+    return;
+  }
+
+  const send = (payload: string) => {
+    try {
+      socket.send(payload);
+    } catch {
+      /* 무시 */
+    }
+  };
+
+  const unsubscribe = subscribe(runId, send);
+  send(JSON.stringify({ type: "snapshot", status: run.status, log: run.log }));
+  socket.on("close", unsubscribe);
+});
+
+  const webIndex = path.join(webDistDir, "index.html");
+  try {
+    await fs.access(webIndex);
+    await fastify.register(staticPlugin, {
+      root: webDistDir,
+      prefix: "/",
+      wildcard: false,
+      decorateReply: false,
+    });
+    fastify.setNotFoundHandler((req, reply) => {
+      const url = (req.url ?? "").split("?")[0] ?? "";
+      if (
+        url.startsWith("/api") ||
+        url.startsWith("/ws") ||
+        url === "/health"
+      )
+        return reply.code(404).send({ error: "not_found" });
+      return reply.sendFile("index.html");
+    });
+  } catch {
+    fastify.log.info(
+      { webDistDir },
+      "Web dist not found; use Vite dev server for UI (pnpm dev).",
+    );
+  }
+
+  appPrepared = true;
+}
+
+export async function startServer(options?: {
+  port?: number;
+  host?: string;
+}): Promise<void> {
+  await prepareApp();
+  const port = options?.port ?? Number(process.env.PORT ?? 3001);
+  const host = options?.host ?? process.env.HOST ?? "0.0.0.0";
+  await fastify.listen({ port, host });
+}
+
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(path.resolve(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  await startServer({
+    port: Number(process.env.PORT ?? 3001),
+    host: process.env.HOST ?? "0.0.0.0",
+  });
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@testflow/playwright-runner",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "lint": "echo \"no lint\""
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.0.0",
+    "playwright": "^1.49.1"
+  }
+}

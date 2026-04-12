@@ -1,0 +1,24 @@
+# Run from repo root after: pnpm --filter @testflow/web build && pnpm --filter @testflow/api build && pnpm --filter @testflow/desktop build
+# Then: pnpm --filter @testflow/desktop dist
+appId: com.testflow.desktop
+productName: TestFlow
+directories:
+  output: release
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: ../../packages/playwright-runner
+    to: playwright-runner
+  - from: ../../apps/web/dist
+    to: web-dist
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage

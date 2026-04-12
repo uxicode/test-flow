@@ -1,0 +1,16 @@
+# 저장소 루트에서 빌드: docker build -f docker/Dockerfile.runner -t testflow-runner:latest .
+FROM mcr.microsoft.com/playwright:v1.49.1-jammy
+
+WORKDIR /app
+
+COPY packages/playwright-runner/package.json ./
+RUN npm install
+
+COPY packages/playwright-runner/playwright.config.ts ./
+COPY packages/playwright-runner/tests ./tests
+
+ENV ARTIFACTS_DIR=/artifacts
+# /artifacts에 둔 스펙이 /app/node_modules의 @playwright/test를 해석할 수 있게 함
+ENV NODE_PATH=/app/node_modules
+
+CMD ["npx", "playwright", "test"]
