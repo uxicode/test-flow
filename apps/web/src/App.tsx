@@ -43,7 +43,7 @@ interface RecordingStopBody {
   smartTc?: SmartTC[];
   parseWarnings?: string[];
   sessionKind?: "codegen" | "hosted";
-  sessionArtifacts?: { videoUrl: string; traceUrl: string };
+  sessionArtifacts?: { videoUrl: string };
   error?: string;
 }
 
@@ -75,7 +75,7 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [lastRecording, setLastRecording] = useState<{
     sessionKind: "codegen" | "hosted";
-    artifacts: { videoUrl: string; traceUrl: string };
+    artifacts: { videoUrl: string };
   } | null>(null);
   const [smartTc, setSmartTc] = useState<SmartTC[] | null>(null);
 
@@ -84,6 +84,8 @@ export default function App() {
   const [log, setLog] = useState("");
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [isStarting, setIsStarting] = useState(false);
+  /** Increment to refetch run history list */
+  const [historyRefreshTick, setHistoryRefreshTick] = useState(0);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const scrollLog = useCallback(() => {
@@ -125,6 +127,7 @@ export default function App() {
         if (data.type === "complete") {
           if (data.status) setStatus(data.status);
           void refreshSummary(runId);
+          setHistoryRefreshTick((n) => n + 1);
         }
       } catch {
         /* 무시 */
@@ -296,7 +299,7 @@ export default function App() {
           );
         if (body.sessionKind && body.sessionArtifacts) {
           const a = body.sessionArtifacts;
-          if (a.videoUrl || a.traceUrl)
+          if (a.videoUrl)
             setLastRecording({
               sessionKind: body.sessionKind,
               artifacts: a,
@@ -343,6 +346,7 @@ export default function App() {
       const json = (await res.json()) as { runId: string };
       setRunId(json.runId);
       setStatus("running");
+      setHistoryRefreshTick((n) => n + 1);
     } catch (e) {
       setStatus("error");
       setLog((e as Error).message);
@@ -368,6 +372,14 @@ export default function App() {
           onSelect={(id) => void handleSelect(id)}
           onCreate={() => void handleCreate()}
           onDelete={(id) => void handleDelete(id)}
+          historyRefreshTick={historyRefreshTick}
+          activeRunId={runId}
+          onHistoryDeletedActiveRun={() => {
+            setRunId(null);
+            setSummary(null);
+            setLog("");
+            setStatus("idle");
+          }}
         />
 
         <main className="flex min-w-0 flex-1 flex-col gap-4">

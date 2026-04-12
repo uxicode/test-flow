@@ -60,6 +60,8 @@ type RunStatus = "queued" | "running" | "passed" | "failed" | "error";
 
 interface RunRecord {
   id: string;
+  /** 시나리오별 실행 기록 필터용 (구버전 run.json에는 없을 수 있음) */
+  scenarioId?: string;
   status: RunStatus;
   log: string;
   exitCode: number | null;
@@ -73,6 +75,134 @@ const subscribers = new Map<string, Set<(payload: string) => void>>();
 
 function getRunArtifactsDir(runId: string): string {
   return path.join(dataRunsRoot, runId);
+}
+
+/** Reject path traversal: runId must be a single directory name under dataRunsRoot. */
+function isSafeRunId(runId: string): boolean {
+  if (!runId || runId !== path.basename(runId)) return false;
+  if (runId.includes("/") || runId.includes("\\") || runId.includes(".."))
+    return false;
+  return true;
+}
+
+async function persistRunRecord(runId: string): Promise<void> {
+  const run = runs.get(runId);
+  if (!run) return;
+  const dir = getRunArtifactsDir(runId);
+  await ensureDir(dir);
+  await fs.writeFile(
+    path.join(dir, "run.json"),
+    JSON.stringify(run, null, 2),
+    "utf8",
+  );
+}
+
+async function loadRunRecordFromDisk(runId: string): Promise<RunRecord | null> {
+  if (!isSafeRunId(runId)) return null;
+  try {
+    const raw = await fs.readFile(
+      path.join(getRunArtifactsDir(runId), "run.json"),
+      "utf8",
+    );
+    return JSON.parse(raw) as RunRecord;
+  } catch {
+    return null;
+  }
+}
+
+/** List runs from disk, newest first. Dirs without run.json get a placeholder row from mtime. */
+async function listPersistedRuns(): Promise<RunRecord[]> {
+  let entries;
+  try {
+    entries = await fs.readdir(dataRunsRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: RunRecord[] = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const id = e.name;
+    if (!isSafeRunId(id)) continue;
+    let record = await loadRunRecordFromDisk(id);
+    if (!record) {
+      try {
+        const st = await fs.stat(path.join(dataRunsRoot, id));
+        const t = st.mtime.toISOString();
+        record = {
+          id,
+          scenarioId: undefined,
+          status: "passed",
+          log: "",
+          exitCode: null,
+          startedAt: t,
+          finishedAt: t,
+        };
+      } catch {
+        continue;
+      }
+    }
+    out.push(record);
+  }
+  out.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+  return out;
+}
+
+async function getRunRecordForApi(runId: string): Promise<RunRecord | null> {
+  if (!isSafeRunId(runId)) return null;
+  const mem = runs.get(runId);
+  if (mem) return mem;
+  return loadRunRecordFromDisk(runId);
+}
+
+/** Normalize spec text for byte comparison (line endings, BOM, trim). */
+function normalizeSpecForCompare(s: string): string {
+  return s.replace(/\r\n/g, "\n").replace(/^\uFEFF/, "").trim();
+}
+
+async function readRunScenarioSpec(runId: string): Promise<string | null> {
+  if (!isSafeRunId(runId)) return null;
+  try {
+    const raw = await fs.readFile(
+      path.join(getRunArtifactsDir(runId), "scenario.spec.ts"),
+      "utf8",
+    );
+    return normalizeSpecForCompare(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Spec text the scenario would produce today (builder or script mode). */
+async function expectedSpecSnapshotForScenario(
+  scenarioId: string,
+): Promise<string | null> {
+  const s = await getScenario(scenariosDir, scenarioId);
+  if (!s) return null;
+  if (s.mode === "script" && s.rawScript.trim() !== "") {
+    return normalizeSpecForCompare(s.rawScript);
+  }
+  if (s.steps.length > 0) {
+    return normalizeSpecForCompare(generateSpec(s.steps));
+  }
+  return null;
+}
+
+/**
+ * run.json의 scenarioId가 없는(구버전) 실행은 scenario.spec.ts 내용이
+ * 지금 시나리오와 같으면 같은 시나리오 실행으로 간주합니다.
+ */
+async function persistedRunMatchesScenarioFilter(
+  record: RunRecord,
+  scenarioId: string,
+): Promise<boolean> {
+  if (record.scenarioId === scenarioId) return true;
+  if (record.scenarioId != null && record.scenarioId !== "") return false;
+  const [expected, actual] = await Promise.all([
+    expectedSpecSnapshotForScenario(scenarioId),
+    readRunScenarioSpec(record.id),
+  ]);
+  if (!expected || !actual) return false;
+  return expected === actual;
 }
 
 function subscribe(runId: string, send: (payload: string) => void): () => void {
@@ -258,6 +388,7 @@ async function executeRun(runId: string, specContent?: string): Promise<void> {
 
   run.status = "running";
   broadcast(runId, { type: "status", status: run.status });
+  await persistRunRecord(runId);
 
   const args = ["playwright", "test", "--config", playwrightConfigPath];
 
@@ -289,7 +420,7 @@ async function executeRun(runId: string, specContent?: string): Promise<void> {
           status: run.status,
           errorMessage: message,
         });
-        resolve();
+        void persistRunRecord(runId).finally(() => resolve());
       });
 
       child.on("exit", (code, signal) => {
@@ -300,7 +431,7 @@ async function executeRun(runId: string, specContent?: string): Promise<void> {
         run.status = exitCode === 0 ? "passed" : "failed";
         run.finishedAt = new Date().toISOString();
         broadcast(runId, { type: "complete", status: run.status, exitCode });
-        resolve();
+        void persistRunRecord(runId).finally(() => resolve());
       });
     });
   } catch (err) {
@@ -311,6 +442,7 @@ async function executeRun(runId: string, specContent?: string): Promise<void> {
     run.finishedAt = new Date().toISOString();
     appendLog(runId, `\n[testflow] ${message}\n`);
     broadcast(runId, { type: "complete", status: run.status, errorMessage: message });
+    await persistRunRecord(runId);
   }
 }
 
@@ -434,7 +566,7 @@ fastify.post("/api/sessions/:sessionId/stop", async (req, reply) => {
       smartTc: stepsToSmartTC(steps),
       parseWarnings: warnings,
       sessionKind: "codegen" as const,
-      sessionArtifacts: { videoUrl: "", traceUrl: "" },
+      sessionArtifacts: { videoUrl: "" },
     };
   }
   const hosted = await stopHostedRecordSession(sessionId, recordingsDir);
@@ -486,21 +618,75 @@ fastify.post("/api/runs", async (req, reply) => {
   const runId = randomUUID();
   const run: RunRecord = {
     id: runId,
+    scenarioId: body.scenarioId,
     status: "queued",
     log: "",
     exitCode: null,
     startedAt: new Date().toISOString(),
   };
   runs.set(runId, run);
+  await persistRunRecord(runId);
 
   void executeRun(runId, specContent);
 
   return reply.code(202).send({ runId });
 });
 
+fastify.get("/api/runs", async (req) => {
+  const scenarioId =
+    typeof (req.query as { scenarioId?: string }).scenarioId === "string"
+      ? (req.query as { scenarioId: string }).scenarioId
+      : undefined;
+  const rows = await listPersistedRuns();
+  let filtered = rows;
+  if (scenarioId != null && scenarioId !== "") {
+    const out: RunRecord[] = [];
+    for (const r of rows) {
+      if (await persistedRunMatchesScenarioFilter(r, scenarioId)) out.push(r);
+    }
+    filtered = out;
+  }
+  return filtered.map((r) => ({
+    id: r.id,
+    scenarioId: r.scenarioId,
+    status: r.status,
+    exitCode: r.exitCode,
+    errorMessage: r.errorMessage,
+    startedAt: r.startedAt,
+    finishedAt: r.finishedAt,
+  }));
+});
+
+fastify.get("/api/runs/:runId/script", async (req, reply) => {
+  const { runId } = req.params as { runId: string };
+  if (!isSafeRunId(runId)) return reply.code(400).send({ error: "invalid_run_id" });
+  const specPath = path.join(getRunArtifactsDir(runId), "scenario.spec.ts");
+  try {
+    const content = await fs.readFile(specPath, "utf8");
+    reply.header("content-type", "text/plain; charset=utf-8");
+    return reply.send(content);
+  } catch {
+    return reply.code(404).send({ error: "not_found" });
+  }
+});
+
+fastify.delete("/api/runs/:runId", async (req, reply) => {
+  const { runId } = req.params as { runId: string };
+  if (!isSafeRunId(runId)) return reply.code(400).send({ error: "invalid_run_id" });
+  const dir = getRunArtifactsDir(runId);
+  try {
+    await fs.rm(dir, { recursive: true, force: true });
+  } catch {
+    return reply.code(500).send({ error: "delete_failed" });
+  }
+  runs.delete(runId);
+  subscribers.delete(runId);
+  return reply.code(204).send();
+});
+
 fastify.get("/api/runs/:runId", async (req, reply) => {
   const { runId } = req.params as { runId: string };
-  const run = runs.get(runId);
+  const run = await getRunRecordForApi(runId);
   if (!run) return reply.code(404).send({ error: "not_found" });
   const base = `/api/runs/${runId}/artifacts`;
   const relPngs = await collectScreenshotRelPaths(runId);
@@ -509,6 +695,7 @@ fastify.get("/api/runs/:runId", async (req, reply) => {
   const videoUrls = relWebms.map((rel) => `${base}/${rel}`);
   return {
     id: run.id,
+    scenarioId: run.scenarioId,
     status: run.status,
     exitCode: run.exitCode,
     errorMessage: run.errorMessage,
@@ -543,23 +730,25 @@ fastify.get("/api/runs/:runId/artifacts/*", async (req, reply) => {
 
 fastify.get("/ws/runs/:runId", { websocket: true }, (socket, req) => {
   const { runId } = req.params as { runId: string };
-  const run = runs.get(runId);
-  if (!run) {
-    socket.close(1008, "unknown_run");
-    return;
-  }
-
-  const send = (payload: string) => {
-    try {
-      socket.send(payload);
-    } catch {
-      /* 무시 */
+  void (async () => {
+    const run = await getRunRecordForApi(runId);
+    if (!run) {
+      socket.close(1008, "unknown_run");
+      return;
     }
-  };
 
-  const unsubscribe = subscribe(runId, send);
-  send(JSON.stringify({ type: "snapshot", status: run.status, log: run.log }));
-  socket.on("close", unsubscribe);
+    const send = (payload: string) => {
+      try {
+        socket.send(payload);
+      } catch {
+        /* 무시 */
+      }
+    };
+
+    const unsubscribe = subscribe(runId, send);
+    send(JSON.stringify({ type: "snapshot", status: run.status, log: run.log }));
+    socket.on("close", unsubscribe);
+  })();
 });
 
   const webIndex = path.join(webDistDir, "index.html");

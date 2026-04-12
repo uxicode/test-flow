@@ -125,7 +125,6 @@ export interface HostedStopResult {
   sessionKind: "hosted";
   sessionArtifacts: {
     videoUrl: string;
-    traceUrl: string;
   };
 }
 
@@ -171,19 +170,9 @@ export async function stopHostedRecordSession(
     /* no video */
   }
 
-  const tracePath = path.join(sessionDir, "trace.zip");
-  let hasTrace = false;
-  try {
-    await fs.access(tracePath);
-    hasTrace = true;
-  } catch {
-    /* no trace */
-  }
-
   const base = `/api/recordings/${sessionId}`;
   const warnings: string[] = [];
   if (!videoRel) warnings.push("session_video_missing");
-  if (!hasTrace) warnings.push("session_trace_missing");
   if (steps.length === 0) warnings.push("no_steps_captured");
 
   return {
@@ -193,7 +182,6 @@ export async function stopHostedRecordSession(
     sessionKind: "hosted",
     sessionArtifacts: {
       videoUrl: videoRel ? `${base}/${videoRel}` : "",
-      traceUrl: hasTrace ? `${base}/trace.zip` : "",
     },
   };
 }

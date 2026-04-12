@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 /**
- * Headed Playwright session: recordVideo + trace + DOM event → steps.json
+ * Headed Playwright session: recordVideo + DOM event → steps.json
  * Spawned by API: npx tsx recordHost.ts <sessionDir> <startUrl>
  */
 import { randomUUID } from "node:crypto";
@@ -204,8 +204,6 @@ async function main(): Promise<void> {
     // CSP 우회: addInitScript/evaluate 가 CSP에 막히지 않도록
     bypassCSP: true,
   });
-  await context.tracing.start({ screenshots: true, snapshots: true });
-
   // addInitScript: 순수 JS로 작성 (TypeScript 타입 제거) — tsx 컴파일 의존 없음
   await context.addInitScript(CAPTURE_SCRIPT);
 
@@ -245,7 +243,6 @@ async function main(): Promise<void> {
   await drainAllFrames(page, steps);
 
   console.log(`[tfRecord] stopping... captured ${steps.length} steps`);
-  await context.tracing.stop({ path: path.join(sessionDir, "trace.zip") }).catch(() => {});
   await context.close();
   await browser.close();
 

@@ -70,7 +70,7 @@ interface Props {
   onStopRecord: () => void;
   lastRecording: {
     sessionKind: "codegen" | "hosted";
-    artifacts: { videoUrl: string; traceUrl: string };
+    artifacts: { videoUrl: string };
   } | null;
   smartTc: SmartTC[] | null;
   onClearSmartTc: () => void;
@@ -246,44 +246,29 @@ export function RunPanel({
         </section>
       ) : null}
 
-      {lastRecording &&
-      (lastRecording.artifacts.videoUrl || lastRecording.artifacts.traceUrl) ? (
+      {lastRecording && lastRecording.artifacts.videoUrl ? (
         <section className="flex flex-col gap-2 rounded-lg border border-violet-900/40 bg-violet-950/20 p-4">
           <h3 className="text-sm font-semibold text-violet-200">최근 녹화 세션</h3>
           <p className="text-xs text-slate-500">
-            녹화에서 저장된 파일입니다. (WebM 및 트레이스)
+            녹화에서 저장된 세션 영상(WebM)입니다.
           </p>
           <div className="flex flex-wrap gap-4 text-sm">
-            {lastRecording.artifacts.videoUrl ? (
-              <a
-                href={lastRecording.artifacts.videoUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-violet-300 underline underline-offset-2 hover:text-violet-200"
-              >
-                세션 영상 (WebM)
-              </a>
-            ) : null}
-            {lastRecording.artifacts.traceUrl ? (
-              <a
-                href={lastRecording.artifacts.traceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-violet-300 underline underline-offset-2 hover:text-violet-200"
-              >
-                trace.zip (Playwright 트레이스)
-              </a>
-            ) : null}
-          </div>
-          {lastRecording.artifacts.videoUrl ? (
-            <video
-              controls
-              className="mt-2 max-h-64 w-full max-w-lg rounded border border-slate-700 bg-black"
-              src={lastRecording.artifacts.videoUrl}
+            <a
+              href={lastRecording.artifacts.videoUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-violet-300 underline underline-offset-2 hover:text-violet-200"
             >
-              <track kind="captions" />
-            </video>
-          ) : null}
+              세션 영상 (WebM)
+            </a>
+          </div>
+          <video
+            controls
+            className="mt-2 max-h-64 w-full max-w-lg rounded border border-slate-700 bg-black"
+            src={lastRecording.artifacts.videoUrl}
+          >
+            <track kind="captions" />
+          </video>
         </section>
       ) : null}
 
