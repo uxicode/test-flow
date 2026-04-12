@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { RunHistoryPanel } from "./components/RunHistoryPanel";
 import { RunPanel } from "./components/RunPanel";
 import { ScenarioBuilder } from "./components/ScenarioBuilder";
 import { ScenarioList } from "./components/ScenarioList";
@@ -372,14 +373,6 @@ export default function App() {
           onSelect={(id) => void handleSelect(id)}
           onCreate={() => void handleCreate()}
           onDelete={(id) => void handleDelete(id)}
-          historyRefreshTick={historyRefreshTick}
-          activeRunId={runId}
-          onHistoryDeletedActiveRun={() => {
-            setRunId(null);
-            setSummary(null);
-            setLog("");
-            setStatus("idle");
-          }}
         />
 
         <main className="flex min-w-0 flex-1 flex-col gap-4">
@@ -501,6 +494,17 @@ export default function App() {
                 lastRecording={lastRecording}
                 smartTc={smartTc}
                 onClearSmartTc={() => setSmartTc(null)}
+              />
+              <RunHistoryPanel
+                scenarioId={draft.id}
+                refreshTrigger={historyRefreshTick}
+                activeRunId={runId}
+                onDeletedActiveRun={() => {
+                  setRunId(null);
+                  setSummary(null);
+                  setLog("");
+                  setStatus("idle");
+                }}
               />
             </>
           )}
