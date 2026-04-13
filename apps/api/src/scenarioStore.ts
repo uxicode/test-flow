@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import type { ExcelTestCase } from "./excelTestCaseTypes.js";
 
 export type StepType =
   | "goto"
@@ -41,6 +42,8 @@ export interface Scenario {
   mode: ScenarioMode;
   steps: Step[];
   rawScript: string;
+  /** Excel TC parse result (same shape as /api/excel/parse `features`). Absent in legacy files. */
+  excelTestCases?: ExcelTestCase[];
   createdAt: string;
   updatedAt: string;
 }
@@ -94,7 +97,13 @@ export async function getScenario(dir: string, id: string): Promise<Scenario | n
 
 export async function createScenario(
   dir: string,
-  partial: { name: string; mode?: ScenarioMode; steps?: Step[]; rawScript?: string },
+  partial: {
+    name: string;
+    mode?: ScenarioMode;
+    steps?: Step[];
+    rawScript?: string;
+    excelTestCases?: ExcelTestCase[];
+  },
 ): Promise<Scenario> {
   await ensureScenariosDir(dir);
   const now = new Date().toISOString();
@@ -105,6 +114,9 @@ export async function createScenario(
     mode: partial.mode ?? "builder",
     steps: Array.isArray(partial.steps) ? partial.steps : [],
     rawScript: typeof partial.rawScript === "string" ? partial.rawScript : "",
+    excelTestCases: Array.isArray(partial.excelTestCases)
+      ? partial.excelTestCases
+      : [],
     createdAt: now,
     updatedAt: now,
   };
@@ -115,7 +127,9 @@ export async function createScenario(
 export async function updateScenario(
   dir: string,
   id: string,
-  patch: Partial<Pick<Scenario, "name" | "mode" | "steps" | "rawScript">>,
+  patch: Partial<
+    Pick<Scenario, "name" | "mode" | "steps" | "rawScript" | "excelTestCases">
+  >,
 ): Promise<Scenario | null> {
   const existing = await getScenario(dir, id);
   if (!existing) return null;
@@ -126,6 +140,9 @@ export async function updateScenario(
     ...(patch.mode !== undefined ? { mode: patch.mode } : {}),
     ...(patch.steps !== undefined ? { steps: patch.steps } : {}),
     ...(patch.rawScript !== undefined ? { rawScript: patch.rawScript } : {}),
+    ...(patch.excelTestCases !== undefined
+      ? { excelTestCases: patch.excelTestCases }
+      : {}),
     updatedAt: now,
   };
   await fs.writeFile(scenarioPath(dir, id), JSON.stringify(next, null, 2), "utf8");

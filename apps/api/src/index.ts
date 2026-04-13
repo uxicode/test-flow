@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import staticPlugin from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
@@ -8,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
+import type { ExcelTestCase } from "./excelTestCaseTypes.js";
 import type { Step } from "./scenarioStore.js";
 import {
   createScenario,
@@ -26,6 +28,16 @@ import {
   stopCodegenSession,
   stopHostedRecordSession,
 } from "./recordingSessions.js";
+import {
+  parseExcelTestCasesArray,
+  parseTestCasesFromJsonBody,
+} from "./excelBodyValidate.js";
+import { parseExcelBuffer } from "./excelParser.js";
+import {
+  generateMergedSpecFromTestCases,
+  generateSpecFilesFromTestCases,
+} from "./excelPlaywrightGenerator.js";
+import { zipGeneratedSpecs } from "./excelZip.js";
 
 // ---------------------------------------------------------------------------
 // 구성
@@ -172,12 +184,16 @@ async function readRunScenarioSpec(runId: string): Promise<string | null> {
   }
 }
 
-/** Spec text the scenario would produce today (builder or script mode). */
+/** Spec text the scenario would produce today (Excel TC, then script, then builder). */
 async function expectedSpecSnapshotForScenario(
   scenarioId: string,
 ): Promise<string | null> {
   const s = await getScenario(scenariosDir, scenarioId);
   if (!s) return null;
+  const excel = s.excelTestCases ?? [];
+  if (excel.length > 0) {
+    return normalizeSpecForCompare(generateMergedSpecFromTestCases(excel));
+  }
   if (s.mode === "script" && s.rawScript.trim() !== "") {
     return normalizeSpecForCompare(s.rawScript);
   }
@@ -238,8 +254,22 @@ async function resolveSpecContent(body: {
   scenarioId?: string;
   steps?: Step[];
   rawScript?: string;
+  excelTestCasesFromBody?: ExcelTestCase[] | null;
+  baseUrl?: string;
 }): Promise<string | undefined> {
-  // 저장되지 않은 편집: 인라인 에디터 내용이 저장된 시나리오보다 우선
+  const fromBody = body.excelTestCasesFromBody;
+  if (fromBody !== undefined && fromBody !== null) {
+    if (fromBody.length > 0)
+      return generateMergedSpecFromTestCases(fromBody, body.baseUrl);
+  } else if (body.scenarioId) {
+    const s0 = await getScenario(scenariosDir, body.scenarioId);
+    if (s0) {
+      const stored = s0.excelTestCases ?? [];
+      if (stored.length > 0)
+        return generateMergedSpecFromTestCases(stored, body.baseUrl);
+    }
+  }
+
   if (typeof body.rawScript === "string" && body.rawScript.trim() !== "")
     return body.rawScript;
 
@@ -461,6 +491,9 @@ async function prepareApp(): Promise<void> {
   await fs.mkdir(recordingsDir, { recursive: true });
 
   await fastify.register(cors, { origin: true });
+  await fastify.register(multipart, {
+    limits: { fileSize: 25 * 1024 * 1024 },
+  });
   await fastify.register(websocket);
 
   fastify.get("/health", async () => ({ ok: true }));
@@ -477,12 +510,25 @@ fastify.post("/api/scenarios", async (req, reply) => {
     mode?: "builder" | "script";
     steps?: Step[];
     rawScript?: string;
+    excelTestCases?: unknown;
   };
+  let excelTestCases: ExcelTestCase[] | undefined;
+  if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
+    const parsed = parseExcelTestCasesArray(body.excelTestCases);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_excel_test_cases",
+        message: "excelTestCases must be an array of ExcelTestCase objects.",
+      });
+    }
+    excelTestCases = parsed;
+  }
   const scenario = await createScenario(scenariosDir, {
     name: body.name ?? "New scenario",
     mode: body.mode,
     steps: body.steps,
     rawScript: body.rawScript,
+    excelTestCases,
   });
   return reply.code(201).send(scenario);
 });
@@ -501,8 +547,24 @@ fastify.put("/api/scenarios/:id", async (req, reply) => {
     mode: "builder" | "script";
     steps: Step[];
     rawScript: string;
+    excelTestCases: unknown;
   }>;
-  const updated = await updateScenario(scenariosDir, id, body);
+  const patch: Parameters<typeof updateScenario>[2] = {};
+  if (body.name !== undefined) patch.name = body.name;
+  if (body.mode !== undefined) patch.mode = body.mode;
+  if (body.steps !== undefined) patch.steps = body.steps;
+  if (body.rawScript !== undefined) patch.rawScript = body.rawScript;
+  if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
+    const parsed = parseExcelTestCasesArray(body.excelTestCases);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_excel_test_cases",
+        message: "excelTestCases must be an array of ExcelTestCase objects.",
+      });
+    }
+    patch.excelTestCases = parsed;
+  }
+  const updated = await updateScenario(scenariosDir, id, patch);
   if (!updated) return reply.code(404).send({ error: "not_found" });
   return updated;
 });
@@ -539,6 +601,72 @@ fastify.post("/api/tc/convert", async (req, reply) => {
   }
   const tc = stepsToSmartTC(body.steps);
   return { totalSteps: tc.length, tc };
+});
+
+// --- Excel → Playwright (.spec.ts codegen only) ---
+
+fastify.post("/api/excel/parse", async (req, reply) => {
+  let fileBuffer: Buffer | null = null;
+  let sheetNamesJson: string | undefined;
+  try {
+    for await (const part of req.parts()) {
+      if (part.type === "file") {
+        if (part.fieldname === "file") {
+          fileBuffer = await part.toBuffer();
+        } else {
+          await part.toBuffer();
+        }
+      } else if (part.fieldname === "sheetNames") {
+        sheetNamesJson = String(part.value ?? "");
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return reply.code(400).send({ error: "multipart_read_failed", message });
+  }
+
+  if (!fileBuffer || fileBuffer.length === 0) {
+    return reply.code(400).send({ error: "file_required" });
+  }
+
+  let sheetNames: string[] | undefined;
+  if (sheetNamesJson && sheetNamesJson.trim()) {
+    try {
+      const parsed = JSON.parse(sheetNamesJson) as unknown;
+      if (
+        !Array.isArray(parsed) ||
+        !parsed.every((x): x is string => typeof x === "string")
+      ) {
+        return reply.code(400).send({ error: "invalid_sheetNames" });
+      }
+      sheetNames = parsed;
+    } catch {
+      return reply.code(400).send({ error: "invalid_sheetNames_json" });
+    }
+  }
+
+  const { features, diagnostics } = parseExcelBuffer(fileBuffer, sheetNames);
+  return { features, diagnostics };
+});
+
+fastify.post("/api/excel/generate", async (req, reply) => {
+  const testCases = parseTestCasesFromJsonBody(req.body);
+  if (!testCases) {
+    return reply.code(400).send({
+      error: "testCases_required",
+      message:
+        "Body must be { testCases: ExcelTestCase[] } (feature, sheetName, policyId, cases[]).",
+    });
+  }
+  const files = generateSpecFilesFromTestCases(testCases);
+  const zip = await zipGeneratedSpecs(files);
+  return reply
+    .header("content-type", "application/zip")
+    .header(
+      "content-disposition",
+      'attachment; filename="generated-tests.zip"',
+    )
+    .send(zip);
 });
 
 // --- 녹화 ---
@@ -776,6 +904,8 @@ fastify.post("/api/runs", async (req, reply) => {
     scenarioId?: string;
     steps?: Step[];
     rawScript?: string;
+    excelTestCases?: unknown;
+    baseUrl?: string;
   };
 
   if (body.scenarioId) {
@@ -783,7 +913,30 @@ fastify.post("/api/runs", async (req, reply) => {
     if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
   }
 
-  const specContent = await resolveSpecContent(body);
+  let excelTestCasesFromBody: ExcelTestCase[] | null | undefined = undefined;
+  if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
+    const parsed = parseExcelTestCasesArray(body.excelTestCases);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_excel_test_cases",
+        message: "excelTestCases must be an array of ExcelTestCase objects.",
+      });
+    }
+    excelTestCasesFromBody = parsed;
+  }
+
+  const baseUrl =
+    typeof body.baseUrl === "string" && body.baseUrl.trim() !== ""
+      ? body.baseUrl.trim()
+      : undefined;
+
+  const specContent = await resolveSpecContent({
+    scenarioId: body.scenarioId,
+    steps: body.steps,
+    rawScript: body.rawScript,
+    excelTestCasesFromBody,
+    baseUrl,
+  });
 
   const runId = randomUUID();
   const run: RunRecord = {

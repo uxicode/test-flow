@@ -63,6 +63,29 @@ pnpm electron:build
 - Smart TC: `GET /api/scenarios/:id/tc`, `POST /api/tc/convert`
 - 녹화: `POST /api/sessions/record` (`url`, `mode`: `hosted` | `codegen`), `POST /api/sessions/:sessionId/stop`
 - 실행: `POST /api/runs`, `GET /api/runs/:runId`, 산출물 라우트, `GET /ws/runs/:runId`
+- Excel → Playwright (code generation only): `POST /api/excel/parse` → `{ "features": [...], "diagnostics": { "errors", "warnings" } }` (multipart `file`, optional `sheetNames` JSON string); `POST /api/excel/generate` accepts JSON `{ "testCases": [...] }` (same objects as `features`) → ZIP of `generated-tests/*.spec.ts`
+- Scenarios can persist parsed Excel rows as `excelTestCases` (same shape as parse `features`). The web app edits this under each scenario (Excel TC tab). `POST /api/runs` accepts `excelTestCases`; when the array is non-empty it wins over builder steps / script and runs as one merged `scenario.spec.ts`. Sending `excelTestCases: []` skips stored Excel TC for that run.
+
+### Excel template (`.xlsx`, 테스트케이스_ex 양식)
+
+- 시트 상단 요약 블록은 무시하고, **`정책 ID`**와 **`테스트케이스ID`**가 같은 행에 있는 줄을 헤더로 인식합니다. 그 다음 `ver.` 보조 행이 있으면 한 줄 건너뜁니다.
+- **필수 열:** `정책 ID`, `테스트케이스ID`, `기대결과`. **선택:** `우선순위`, `1 Depth`…`7 Depth`, `사전조건`, `Chrome`, `Edge`, `결함내역/비고` 등.
+- **ZIP 내 파일:** 시트·정책별 `feature` = `{sheetName}_{policyId}` 하나당 `.spec.ts` 하나. 각 TC 행은 `test.fixme` + 기대결과 등이 블록 주석으로 들어갑니다.
+- **선택 자동화 열** (같은 시트에 추가 가능): `test_id`, `action` (`click` / `input` / `navigate`), `value`, `assertion` (`visible:` / `text:` / `url:` DSL). 채워진 행에만 `getByTestId` 등 코드가 생성됩니다. 열 매핑은 [`apps/api/src/excelParser.ts`](apps/api/src/excelParser.ts)의 `matchColumnLabel` 참고.
+
+### curl
+
+```bash
+curl -sS -X POST http://127.0.0.1:3001/api/excel/parse \
+  -F "file=@./cases.xlsx" \
+  -F 'sheetNames=["Sheet1"]'
+
+curl -sS -X POST http://127.0.0.1:3001/api/excel/generate \
+  -H 'content-type: application/json' \
+  -d @body.json -o generated-tests.zip
+```
+
+`body.json` uses `{ "testCases": [ ... ] }` — use the same array as `features` from the parse response.
 
 ## 모노레포 구조
 

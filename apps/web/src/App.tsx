@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ExcelPlaywrightPanel } from "./components/ExcelPlaywrightPanel";
 import { RunHistoryPanel } from "./components/RunHistoryPanel";
 import { RunPanel } from "./components/RunPanel";
 import { ScenarioBuilder } from "./components/ScenarioBuilder";
@@ -155,14 +156,27 @@ export default function App() {
   }, [status, runId]);
 
   async function handleCreate(): Promise<void> {
+    const nextNum = list.length + 1;
     const created = await fetchJson<Scenario>("/api/scenarios", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "새 시나리오", mode: "builder" }),
+      body: JSON.stringify({ name: `새 시나리오 ${nextNum}`, mode: "builder" }),
     });
     await refreshList();
     setDraft(created);
     setEditorTab(created.mode);
+  }
+
+  async function handleRename(id: string, name: string): Promise<void> {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    await fetch(`/api/scenarios/${id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    await refreshList();
+    if (draft?.id === id) setDraft((prev) => (prev ? { ...prev, name: trimmed } : prev));
   }
 
   /** URL이 있으면 첫 스텝으로 페이지 이동을 넣은 시나리오 생성 */
@@ -188,7 +202,7 @@ export default function App() {
 
   async function handleSelect(id: string): Promise<void> {
     const s = await fetchJson<Scenario>(`/api/scenarios/${id}`);
-    setDraft(s);
+    setDraft({ ...s, excelTestCases: s.excelTestCases ?? [] });
     setEditorTab(s.mode);
   }
 
@@ -204,6 +218,7 @@ export default function App() {
           mode: draft.mode,
           steps: draft.steps,
           rawScript: draft.rawScript,
+          excelTestCases: draft.excelTestCases ?? [],
         }),
       });
       setDraft(updated);
@@ -235,7 +250,8 @@ export default function App() {
 
   function switchTab(tab: EditorMode): void {
     setEditorTab(tab);
-    if (draft) setDraft({ ...draft, mode: tab });
+    if (tab === "excel" || !draft) return;
+    setDraft({ ...draft, mode: tab });
   }
 
   async function handleStartRecord(): Promise<void> {
@@ -294,6 +310,7 @@ export default function App() {
           rawScript: script,
           mode: "builder",
           steps: normalized,
+          excelTestCases: draft.excelTestCases ?? [],
         });
         setEditorTab("builder");
         if (Array.isArray(body.smartTc) && body.smartTc.length > 0)
@@ -330,9 +347,10 @@ export default function App() {
 
   const canRun =
     draft != null &&
-    (draft.mode === "builder"
-      ? draft.steps.length > 0
-      : draft.rawScript.trim() !== "");
+    ((draft.excelTestCases?.length ?? 0) > 0 ||
+      (draft.mode === "builder"
+        ? draft.steps.length > 0
+        : draft.rawScript.trim() !== ""));
 
   async function startRun(): Promise<void> {
     if (!draft) return;
@@ -341,10 +359,22 @@ export default function App() {
     setSummary(null);
     setStatus("queued");
     try {
+      const hasExcel = (draft.excelTestCases?.length ?? 0) > 0;
+      const baseUrl = hasExcel && recordUrl.trim() !== "" ? recordUrl.trim() : undefined;
       const body =
         draft.mode === "builder"
-          ? { scenarioId: draft.id, steps: draft.steps as Step[] }
-          : { scenarioId: draft.id, rawScript: draft.rawScript };
+          ? {
+              scenarioId: draft.id,
+              steps: draft.steps as Step[],
+              excelTestCases: draft.excelTestCases ?? [],
+              ...(baseUrl ? { baseUrl } : {}),
+            }
+          : {
+              scenarioId: draft.id,
+              rawScript: draft.rawScript,
+              excelTestCases: draft.excelTestCases ?? [],
+              ...(baseUrl ? { baseUrl } : {}),
+            };
       const res = await fetch("/api/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -380,6 +410,7 @@ export default function App() {
           onSelect={(id) => void handleSelect(id)}
           onCreate={() => void handleCreate()}
           onDelete={(id) => void handleDelete(id)}
+          onRename={(id, name) => void handleRename(id, name)}
         />
 
         <main className="flex min-w-0 flex-1 flex-col gap-4">
@@ -473,14 +504,32 @@ export default function App() {
                 >
                   스크립트
                 </button>
+                <button
+                  type="button"
+                  onClick={() => switchTab("excel")}
+                  className={`rounded px-3 py-1.5 text-sm font-medium ${
+                    editorTab === "excel"
+                      ? "bg-slate-800 text-sky-300"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  Excel TC
+                </button>
               </div>
 
               {editorTab === "builder" ? (
                 <ScenarioBuilder steps={draft.steps} onChange={setSteps} />
-              ) : (
+              ) : editorTab === "script" ? (
                 <ScriptEditor
                   value={draft.rawScript}
                   onChange={(rawScript) => updateDraft({ rawScript })}
+                />
+              ) : (
+                <ExcelPlaywrightPanel
+                  excelTestCases={draft.excelTestCases ?? []}
+                  onExcelTestCasesChange={(excelTestCases) =>
+                    updateDraft({ excelTestCases })
+                  }
                 />
               )}
 

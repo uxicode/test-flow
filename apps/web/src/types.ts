@@ -145,19 +145,45 @@ export const EXAMPLE_SCENARIO: Step[] = [
   { ...createStep("screenshot"), label: "homepage" },
 ];
 
-export type EditorMode = "builder" | "script";
+export type EditorMode = "builder" | "script" | "excel";
 
 export interface ScenarioSummary {
   id: string;
   name: string;
-  mode: EditorMode;
+  mode: "builder" | "script";
   updatedAt: string;
+}
+
+/** One feature from /api/excel/parse `features` (Excel TC sheet). */
+export interface ExcelAutomationSlice {
+  testId?: string;
+  action?: "click" | "input" | "navigate";
+  value?: string;
+  assertion?: string;
+}
+
+export interface ExcelTcCaseRow {
+  caseId: string;
+  priority?: string;
+  depthPath: string[];
+  precondition?: string;
+  expected: string;
+  notes?: { chrome?: string; edge?: string; defect?: string };
+  automation?: ExcelAutomationSlice | null;
+}
+
+export interface ExcelTestCase {
+  feature: string;
+  sheetName: string;
+  policyId: string;
+  cases: ExcelTcCaseRow[];
 }
 
 export interface Scenario extends ScenarioSummary {
   steps: Step[];
   rawScript: string;
   createdAt: string;
+  excelTestCases?: ExcelTestCase[];
 }
 
 // ---------------------------------------------------------------------------
