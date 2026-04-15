@@ -47,14 +47,15 @@ export function generateSpec(steps: Step[]): string {
         lines.push(`  await ${sel}.check();`);
         break;
       case "assert_visible":
-        lines.push(`  await expect(${sel}).toBeVisible();`);
+        /* soft: 중간 검증 실패 시에도 이후 스텝·영상이 끝까지 이어지도록 */
+        lines.push(`  await expect.soft(${sel}).toBeVisible();`);
         break;
       case "assert_hidden":
-        lines.push(`  await expect(${sel}).toBeHidden();`);
+        lines.push(`  await expect.soft(${sel}).toBeHidden();`);
         break;
       case "assert_text":
         lines.push(
-          `  await expect(${sel}).toHaveText(${JSON.stringify(step.inputValue ?? "")});`,
+          `  await expect.soft(${sel}).toHaveText(${JSON.stringify(step.inputValue ?? "")});`,
         );
         break;
       case "wait_ms":

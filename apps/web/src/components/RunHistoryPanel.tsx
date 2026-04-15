@@ -37,7 +37,7 @@ interface RecordingListItem {
   stoppedAt?: string;
   videoUrl: string;
   stepsJsonUrl: string;
-  /** API \uAD6C\uBC88\uC5D0 \uC5C6\uC744 \uC218 \uC788\uC74C */
+  /** API 구버전에 없을 수 있음 */
   smartTcJsonUrl?: string;
 }
 
@@ -50,11 +50,11 @@ const STATUS_STYLES: Record<PersistedRunStatus, string> = {
 };
 
 const STATUS_LABELS: Record<PersistedRunStatus, string> = {
-  queued: "\uB300\uAE30",
-  running: "\uC2E4\uD589 \uC911",
-  passed: "\uC131\uACF5",
-  failed: "\uC2E4\uD328",
-  error: "\uC624\uB958",
+  queued: "대기",
+  running: "실행 중",
+  passed: "성공",
+  failed: "실패",
+  error: "오류",
 };
 
 function formatWhen(iso: string): string {
@@ -106,9 +106,7 @@ function RecordingSmartTcPreview({
           embedded ? "text-[10px] text-slate-600" : "text-xs text-slate-600"
         }
       >
-        {
-          "\uC2A4\uB9C8\uD2B8 TC\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."
-        }
+        스마트 TC를 불러오지 못했습니다.
       </p>
     );
   }
@@ -119,7 +117,7 @@ function RecordingSmartTcPreview({
           embedded ? "text-[10px] text-slate-500" : "text-xs text-slate-500"
         }
       >
-        {"\uC2A4\uB9C8\uD2B8 TC \uBD88\uB7EC\uC624\uB294 \uC911\u2026"}
+        스마트 TC 불러오는 중…
       </p>
     );
   }
@@ -130,7 +128,7 @@ function RecordingSmartTcPreview({
           embedded ? "text-[10px] text-slate-600" : "text-xs text-slate-600"
         }
       >
-        {"\uC2A4\uB9C8\uD2B8 TC \uD56D\uBAA9\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}
+        스마트 TC 항목이 없습니다.
       </p>
     );
   }
@@ -143,7 +141,7 @@ function RecordingSmartTcPreview({
             : "text-xs font-medium text-emerald-300/90"
         }
       >
-        {"\uC2A4\uB9C8\uD2B8 TC"}
+        스마트 TC
       </span>
       <SmartTcTable items={items} compact={embedded} />
     </div>
@@ -245,7 +243,7 @@ export function RunHistoryPanel({
       if (!res.ok) {
         setScriptModal({
           runId,
-          text: "(\uC774 \uC2E4\uD589\uC5D0 scenario.spec.ts\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.)",
+          text: "(이 실행에 scenario.spec.ts가 없습니다.)",
           title: "scenario.spec.ts",
         });
         return;
@@ -259,7 +257,7 @@ export function RunHistoryPanel({
     } catch {
       setScriptModal({
         runId,
-        text: "(\uC2A4\uD06C\uB9BD\uD2B8 \uBD88\uB7EC\uC624\uAE30 \uC2E4\uD328)",
+        text: "(스크립트 불러오기 실패)",
         title: "scenario.spec.ts",
       });
     }
@@ -283,7 +281,7 @@ export function RunHistoryPanel({
     } catch {
       setScriptModal({
         runId: sessionId,
-        text: "(\uBD88\uB7EC\uC624\uAE30 \uC2E4\uD328)",
+        text: "(불러오기 실패)",
         title: "steps.json",
       });
     }
@@ -307,7 +305,7 @@ export function RunHistoryPanel({
     } catch {
       setScriptModal({
         runId: sessionId,
-        text: "(\uBD88\uB7EC\uC624\uAE30 \uC2E4\uD328)",
+        text: "(불러오기 실패)",
         title: "smartTc.json",
       });
     }
@@ -316,7 +314,7 @@ export function RunHistoryPanel({
   async function removeRun(runId: string): Promise<void> {
     if (
       !confirm(
-        `\uC2E4\uD589 \uAE30\uB85D ${runId.slice(0, 8)}\u2026 \uBC0F \uC0B0\uCD9C\uBB3C\uC744 \uB514\uC2A4\uD06C\uC5D0\uC11C \uC0AD\uC81C\uD560\uAE4C\uC694?`,
+        `실행 기록 ${runId.slice(0, 8)}… 및 산출물을 디스크에서 삭제할까요?`,
       )
     )
       return;
@@ -350,13 +348,13 @@ export function RunHistoryPanel({
             disabled={busy}
             className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800 disabled:opacity-50"
           >
-            {busy ? "\uBD88\uB7EC\uC624\uB294 \uC911\u2026" : "\uC0C8\uB85C\uACE0\uCE68"}
+            {busy ? "불러오는 중…" : "새로고침"}
           </button>
         </div>
       ) : (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-300">
-            {"\uC2E4\uD589 \uAE30\uB85D"}
+            실행 기록
           </h3>
           <button
             type="button"
@@ -364,15 +362,13 @@ export function RunHistoryPanel({
             disabled={busy}
             className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
           >
-            {busy ? "\uBD88\uB7EC\uC624\uB294 \uC911\u2026" : "\uC0C8\uB85C\uACE0\uCE68"}
+            {busy ? "불러오는 중…" : "새로고침"}
           </button>
         </div>
       )}
       {!embedded ? (
         <p className="text-xs text-slate-500">
-          {
-            "\uC774 \uC2DC\uB098\uB9AC\uC624\uC5D0 \uC5F0\uACB0\uB41C \uD638\uC2A4\uD2B8 \uB179\uD654(\uC601\uC0C1\u00B7steps.json\u00B7smartTc.json)\uACFC Playwright \uC2E4\uD589 \uAE30\uB85D\uC744 \uD55C\uACE8\uC5D0 \uBD09\uB2C9\uB2C8\uB2E4. \uD589\uC744 \uD3BC\uCCD0 \uC0C1\uC138\uB97C \uD655\uC778\uD558\uC138\uC694."
-          }
+          이 시나리오에 연결된 호스트 녹화(영상·steps.json·smartTc.json)과 Playwright 실행 기록을 한곳에 봅니다. 행을 펼쳐 상세를 확인하세요.
         </p>
       ) : null}
       {loadError ? (
@@ -399,7 +395,7 @@ export function RunHistoryPanel({
                 : "text-xs font-semibold text-slate-400"
             }
           >
-            {"\uB179\uD654"}
+            녹화
           </h4>
           {recordings.length === 0 && !busy ? (
             <p
@@ -407,9 +403,7 @@ export function RunHistoryPanel({
                 embedded ? "text-[10px] text-slate-600" : "text-xs text-slate-600"
               }
             >
-              {
-                "\uC5F0\uACB0\uB41C \uB179\uD654\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uB179\uD654 \uC2DC \uC2DC\uB098\uB9AC\uC624\uAC00 \uC120\uD0DD\uB418\uC5B4 \uC788\uC5B4\uC57C \uBAA9\uB85D\uC5D0 \uB098\uD0C1\uB2C8\uB2E4."
-              }
+              연결된 녹화가 없습니다. 녹화 시 시나리오가 선택되어 있어야 목록에 나타납니다.
             </p>
           ) : null}
           <ul
@@ -472,11 +466,11 @@ export function RunHistoryPanel({
                       className="text-xs text-sky-400 underline"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      {"\uC601\uC0C1 \uC0C8 \uCC3D"}
+                      영상 새 창
                     </a>
                   ) : (
                     <span className="text-xs text-slate-600">
-                      {"(\uC601\uC0C1 \uC5C6\uC74C)"}
+                      (영상 없음)
                     </span>
                   )}
                 </div>
@@ -517,7 +511,7 @@ export function RunHistoryPanel({
                 : "text-xs font-semibold text-slate-400"
             }
           >
-            {"\uD14C\uC2A4\uD2B8 \uC2E4\uD589"}
+            테스트 실행
           </h4>
           {rows.length === 0 && !busy ? (
             <p
@@ -525,7 +519,7 @@ export function RunHistoryPanel({
                 embedded ? "text-[10px] text-slate-600" : "text-xs text-slate-600"
               }
             >
-              {"\uC800\uC7A5\uB41C \uC2E4\uD589\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}
+              저장된 실행이 없습니다.
             </p>
           ) : null}
           <ul
@@ -579,34 +573,34 @@ export function RunHistoryPanel({
                   className="text-xs text-sky-400 underline"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  {"\uB9AC\uD3EC\uD2B8"}
+                  리포트
                 </a>
                 <button
                   type="button"
                   className="text-xs text-violet-300 underline"
                   onClick={() => void openScript(r.id)}
                 >
-                  {"\uC2A4\uD06C\uB9BD\uD2B8"}
+                  스크립트
                 </button>
                 <button
                   type="button"
                   className="text-xs text-rose-400 hover:underline"
                   onClick={() => void removeRun(r.id)}
                 >
-                  {"\uC0AD\uC81C"}
+                  삭제
                 </button>
               </div>
               {expanded ? (
                 <div className="border-t border-slate-800/80 px-2 py-2 text-xs">
                   {detailLoadingId === r.id ? (
                     <p className="text-slate-500">
-                      {"\uC0C1\uC138 \uBD88\uB7EC\uC624\uB294 \uC911\u2026"}
+                      상세 불러오는 중…
                     </p>
                   ) : detail ? (
                     <div className="flex flex-col gap-3">
                       <div className="flex flex-wrap gap-3 text-slate-400">
                         <span>
-                          {"\uC885\uB8CC:"}{" "}
+                          종료:{" "}
                           {detail.finishedAt
                             ? formatWhen(detail.finishedAt)
                             : "—"}
@@ -620,7 +614,7 @@ export function RunHistoryPanel({
                           rel="noreferrer"
                           className="text-sky-400 underline"
                         >
-                          {"\uD14C\uC2A4\uD2B8 \uACB0\uACFC"}
+                          테스트 결과
                         </a>
                       </div>
                       {detail.errorMessage ? (
@@ -630,7 +624,7 @@ export function RunHistoryPanel({
                       detail.artifacts.videoUrls.length > 0 ? (
                         <div className="flex flex-col gap-2">
                           <span className="font-medium text-slate-500">
-                            {`\uC601\uC0C1 (${detail.artifacts.videoUrls.length})`}
+                            {`영상 (${detail.artifacts.videoUrls.length})`}
                           </span>
                           {detail.artifacts.videoUrls.map((src) => (
                             <video
@@ -652,7 +646,7 @@ export function RunHistoryPanel({
                       detail.artifacts.screenshotUrls.length > 0 ? (
                         <div className="flex flex-col gap-2">
                           <span className="font-medium text-slate-500">
-                            {`\uC2A4\uD06C\uB9B0\uC0F7 (${detail.artifacts.screenshotUrls.length})`}
+                            {`스크린샷 (${detail.artifacts.screenshotUrls.length})`}
                           </span>
                           <div className="flex gap-2 overflow-x-auto pb-1">
                             {detail.artifacts.screenshotUrls.map((src) => (
@@ -676,9 +670,7 @@ export function RunHistoryPanel({
                     </div>
                   ) : (
                     <p className="text-slate-500">
-                      {
-                        "\uC0C1\uC138\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."
-                      }
+                      상세를 불러오지 못했습니다.
                     </p>
                   )}
                 </div>
@@ -708,7 +700,7 @@ export function RunHistoryPanel({
                 className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
                 onClick={() => setScriptModal(null)}
               >
-                {"\uB2EB\uAE30"}
+                닫기
               </button>
             </div>
             <pre className="max-h-[70vh] overflow-auto rounded border border-slate-800 bg-slate-900/80 p-3 font-mono text-[11px] leading-relaxed text-slate-300">

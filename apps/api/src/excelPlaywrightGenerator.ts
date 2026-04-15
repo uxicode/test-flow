@@ -42,11 +42,11 @@ function testTitleForCase(policyId: string, row: ExcelTcCaseRow): string {
 function assertionToCode(assertion: ExcelAssertion): string {
   switch (assertion.type) {
     case "visible":
-      return `  await expect(page.getByTestId(${JSON.stringify(assertion.target ?? "")})).toBeVisible();`;
+      return `  await expect.soft(page.getByTestId(${JSON.stringify(assertion.target ?? "")})).toBeVisible();`;
     case "text":
-      return `  await expect(page.getByTestId(${JSON.stringify(assertion.target ?? "")})).toHaveText(${JSON.stringify(assertion.expected ?? "")});`;
+      return `  await expect.soft(page.getByTestId(${JSON.stringify(assertion.target ?? "")})).toHaveText(${JSON.stringify(assertion.expected ?? "")});`;
     case "url":
-      return `  await expect(page).toHaveURL(${JSON.stringify(assertion.expected ?? "")});`;
+      return `  await expect.soft(page).toHaveURL(${JSON.stringify(assertion.expected ?? "")});`;
   }
 }
 

@@ -166,7 +166,9 @@ function parseActionLine(line: string): Step | null {
 }
 
 function parseExpectLine(line: string): Step | null {
-  const vis = line.match(/^await\s+expect\s*\(([\s\S]+?)\)\.toBeVisible\s*\(\s*\)\s*;?\s*$/);
+  const vis = line.match(
+    /^await\s+expect(?:\.soft)?\s*\(([\s\S]+?)\)\.toBeVisible\s*\(\s*\)\s*;?\s*$/,
+  );
   if (vis) {
     const loc = locatorFromExpr(vis[1]);
     if (loc)
@@ -176,7 +178,9 @@ function parseExpectLine(line: string): Step | null {
         role: loc.role as Step["role"],
       });
   }
-  const hid = line.match(/^await\s+expect\s*\(([\s\S]+?)\)\.toBeHidden\s*\(\s*\)\s*;?\s*$/);
+  const hid = line.match(
+    /^await\s+expect(?:\.soft)?\s*\(([\s\S]+?)\)\.toBeHidden\s*\(\s*\)\s*;?\s*$/,
+  );
   if (hid) {
     const loc = locatorFromExpr(hid[1]);
     if (loc)
@@ -188,7 +192,7 @@ function parseExpectLine(line: string): Step | null {
   }
   const txt = line.match(
     new RegExp(
-      String.raw`^await\s+expect\s*\(([\s\S]+?)\)\.toHaveText\s*\(\s*${QSTR_CAP}\s*\)\s*;?\s*$`,
+      String.raw`^await\s+expect(?:\.soft)?\s*\(([\s\S]+?)\)\.toHaveText\s*\(\s*${QSTR_CAP}\s*\)\s*;?\s*$`,
     ),
   );
   if (txt) {

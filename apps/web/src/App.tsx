@@ -49,6 +49,34 @@ interface RecordingStopBody {
   error?: string;
 }
 
+/** 시나리오 전환 시에도 유지되는 실행·녹화 패널 UI (시나리오 ID별) */
+interface ScenarioRunUiState {
+  recordUrl: string;
+  lastRecording: {
+    sessionKind: "codegen" | "hosted";
+    artifacts: { videoUrl: string };
+  } | null;
+  smartTc: SmartTC[] | null;
+  runId: string | null;
+  status: RunStatus;
+  log: string;
+  summary: RunSummary | null;
+  isStarting: boolean;
+}
+
+function createDefaultRunUi(): ScenarioRunUiState {
+  return {
+    recordUrl: "https://example.com",
+    lastRecording: null,
+    smartTc: null,
+    runId: null,
+    status: "idle",
+    log: "",
+    summary: null,
+    isStarting: false,
+  };
+}
+
 function wsUrlForRun(runId: string): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}/ws/runs/${runId}`;
@@ -68,35 +96,58 @@ export default function App() {
   const [editorTab, setEditorTab] = useState<EditorMode>("builder");
   const [saveBusy, setSaveBusy] = useState(false);
 
-  const [recordUrl, setRecordUrl] = useState("https://example.com");
+  const [runUiByScenario, setRunUiByScenario] = useState<
+    Record<string, ScenarioRunUiState>
+  >({});
   /** 빈 화면에서 시나리오 생성 시 사용할 테스트 시작 URL */
   const [quickStartUrl, setQuickStartUrl] = useState("");
+  /** 동시에 하나의 녹화 세션만 — 어느 시나리오에서 시작했는지 추적 */
   const [recordingSessionId, setRecordingSessionId] = useState<string | null>(
     null,
   );
-  const [isRecording, setIsRecording] = useState(false);
-  const [lastRecording, setLastRecording] = useState<{
-    sessionKind: "codegen" | "hosted";
-    artifacts: { videoUrl: string };
-  } | null>(null);
-  const [smartTc, setSmartTc] = useState<SmartTC[] | null>(null);
-
-  const [runId, setRunId] = useState<string | null>(null);
-  const [status, setStatus] = useState<RunStatus>("idle");
-  const [log, setLog] = useState("");
-  const [summary, setSummary] = useState<RunSummary | null>(null);
-  const [isStarting, setIsStarting] = useState(false);
+  const [recordingForScenarioId, setRecordingForScenarioId] = useState<
+    string | null
+  >(null);
+  /** WebSocket이 붙을 실행 ID (백그라운드 실행도 이 ID로 로그를 해당 시나리오에 반영) */
+  const [wsRunId, setWsRunId] = useState<string | null>(null);
+  const runTargetScenarioRef = useRef<string | null>(null);
   /** Increment to refetch run history list */
   const [historyRefreshTick, setHistoryRefreshTick] = useState(0);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  function patchRunUi(
+    scenarioId: string,
+    patch: Partial<ScenarioRunUiState>,
+  ): void {
+    setRunUiByScenario((prev) => {
+      const base = prev[scenarioId] ?? createDefaultRunUi();
+      return { ...prev, [scenarioId]: { ...base, ...patch } };
+    });
+  }
+
+  function appendLog(scenarioId: string, chunk: string): void {
+    setRunUiByScenario((prev) => {
+      const base = prev[scenarioId] ?? createDefaultRunUi();
+      return {
+        ...prev,
+        [scenarioId]: { ...base, log: base.log + chunk },
+      };
+    });
+  }
 
   const scrollLog = useCallback(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
+  const activeRunUi =
+    draft != null
+      ? (runUiByScenario[draft.id] ?? createDefaultRunUi())
+      : createDefaultRunUi();
+
   useEffect(() => {
+    if (!draft) return;
     scrollLog();
-  }, [log, scrollLog]);
+  }, [draft, activeRunUi.log, scrollLog]);
 
   async function refreshList(): Promise<void> {
     const rows = await fetchJson<ScenarioSummary[]>("/api/scenarios");
@@ -107,9 +158,19 @@ export default function App() {
     void refreshList().catch(() => setList([]));
   }, []);
 
+  async function refreshSummaryForScenario(
+    runId: string,
+    scenarioId: string,
+  ): Promise<void> {
+    const res = await fetch(`/api/runs/${runId}`);
+    if (!res.ok) return;
+    const sum = (await res.json()) as RunSummary;
+    patchRunUi(scenarioId, { summary: sum });
+  }
+
   useEffect(() => {
-    if (!runId) return;
-    const socket = new WebSocket(wsUrlForRun(runId));
+    if (!wsRunId) return;
+    const socket = new WebSocket(wsUrlForRun(wsRunId));
     socket.addEventListener("message", (event) => {
       try {
         const data = JSON.parse(event.data as string) as {
@@ -118,42 +179,45 @@ export default function App() {
           status?: RunStatus;
           log?: string;
         };
+        const sid = runTargetScenarioRef.current;
+        if (!sid) return;
         if (data.type === "snapshot") {
-          if (data.status) setStatus(data.status);
-          if (typeof data.log === "string") setLog(data.log);
+          const patch: Partial<ScenarioRunUiState> = {};
+          if (data.status) patch.status = data.status;
+          if (typeof data.log === "string") patch.log = data.log;
+          if (Object.keys(patch).length > 0) patchRunUi(sid, patch);
           return;
         }
         if (data.type === "log" && typeof data.chunk === "string")
-          setLog((prev) => prev + data.chunk);
-        if (data.type === "status" && data.status) setStatus(data.status);
+          appendLog(sid, data.chunk);
+        if (data.type === "status" && data.status)
+          patchRunUi(sid, { status: data.status });
         if (data.type === "complete") {
-          if (data.status) setStatus(data.status);
-          void refreshSummary(runId);
+          if (data.status) patchRunUi(sid, { status: data.status });
+          void refreshSummaryForScenario(wsRunId, sid);
           setHistoryRefreshTick((n) => n + 1);
+          setWsRunId(null);
+          runTargetScenarioRef.current = null;
         }
       } catch {
         /* 무시 */
       }
     });
     return () => socket.close();
-  }, [runId]);
-
-  async function refreshSummary(id: string): Promise<void> {
-    const res = await fetch(`/api/runs/${id}`);
-    if (!res.ok) return;
-    setSummary((await res.json()) as RunSummary);
-  }
+  }, [wsRunId]);
 
   /** 실행 중에도 test-results에 쌓인 스크린샷을 주기적으로 반영 */
   useEffect(() => {
-    if (status !== "running" || !runId) return;
+    if (!wsRunId) return;
+    const sid = runTargetScenarioRef.current;
+    if (!sid) return;
     const tick = (): void => {
-      void refreshSummary(runId);
+      void refreshSummaryForScenario(wsRunId, sid);
     };
     const t = window.setInterval(tick, 4000);
     tick();
     return () => window.clearInterval(t);
-  }, [status, runId]);
+  }, [wsRunId]);
 
   async function handleCreate(): Promise<void> {
     const nextNum = list.length + 1;
@@ -197,7 +261,7 @@ export default function App() {
     await refreshList();
     setDraft(created);
     setEditorTab("builder");
-    if (url.length > 0) setRecordUrl(url);
+    if (url.length > 0) patchRunUi(created.id, { recordUrl: url });
   }
 
   async function handleSelect(id: string): Promise<void> {
@@ -236,6 +300,11 @@ export default function App() {
       setDraft(null);
       setEditorTab("builder");
     }
+    setRunUiByScenario((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   }
 
   function updateDraft(patch: Partial<Scenario>): void {
@@ -255,41 +324,50 @@ export default function App() {
   }
 
   async function handleStartRecord(): Promise<void> {
+    if (!draft) return;
+    const ru = runUiByScenario[draft.id] ?? createDefaultRunUi();
     try {
       const res = await fetchJson<{ sessionId: string }>("/api/sessions/record", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          url: recordUrl,
+          url: ru.recordUrl,
           mode: "hosted",
-          scenarioId: draft?.id,
+          scenarioId: draft.id,
         }),
       });
       setRecordingSessionId(res.sessionId);
-      setIsRecording(true);
+      setRecordingForScenarioId(draft.id);
     } catch (e) {
-      setLog(`녹화 시작 실패: ${(e as Error).message}`);
+      patchRunUi(draft.id, {
+        log: `${ru.log}\n녹화 시작 실패: ${(e as Error).message}\n`,
+      });
     }
   }
 
   async function handleStopRecord(): Promise<void> {
     if (!recordingSessionId) {
-      setIsRecording(false);
+      setRecordingForScenarioId(null);
       return;
     }
+    const targetSid = recordingForScenarioId;
+    const baseUi =
+      targetSid != null
+        ? (runUiByScenario[targetSid] ?? createDefaultRunUi())
+        : createDefaultRunUi();
     try {
       const res = await fetch(`/api/sessions/${recordingSessionId}/stop`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ scenarioId: draft?.id }),
+        body: JSON.stringify({ scenarioId: targetSid }),
       });
       const body = (await res.json()) as RecordingStopBody;
       if (!res.ok || body.error) {
-        setLog(
-          (prev) =>
-            prev + `\n녹화 종료 오류: ${body.error ?? res.statusText}\n`,
-        );
-      } else if (draft) {
+        if (targetSid)
+          patchRunUi(targetSid, {
+            log: `${baseUi.log}\n녹화 종료 오류: ${body.error ?? res.statusText}\n`,
+          });
+      } else if (targetSid && draft?.id === targetSid) {
         const rawSteps = Array.isArray(body.steps) ? body.steps : [];
         const normalized = rawSteps.map((s) =>
           normalizeStepFromApi(s as Record<string, unknown>),
@@ -298,11 +376,11 @@ export default function App() {
         const hasSteps = normalized.length > 0;
         const warns = body.parseWarnings ?? [];
         if (!hasSteps) {
-          setLog(
-            (prev) =>
-              prev +
+          patchRunUi(targetSid, {
+            log:
+              baseUi.log +
               "\n녹화된 사용자 행위를 스텝으로 변환하지 못했습니다. 다시 녹화해 주세요.\n",
-          );
+          });
           return;
         }
         setDraft({
@@ -313,34 +391,34 @@ export default function App() {
           excelTestCases: draft.excelTestCases ?? [],
         });
         setEditorTab("builder");
-        if (Array.isArray(body.smartTc) && body.smartTc.length > 0)
-          setSmartTc(body.smartTc);
+        let newLog = baseUi.log;
         if (warns.length > 0)
-          setLog(
-            (prev) =>
-              prev +
-              `\n녹화 참고:\n${warns.map((w) => `  - ${w}`).join("\n")}\n`,
-          );
-        if (body.sessionKind && body.sessionArtifacts) {
-          const a = body.sessionArtifacts;
-          if (a.videoUrl)
-            setLastRecording({
-              sessionKind: body.sessionKind,
-              artifacts: a,
-            });
+          newLog += `\n녹화 참고:\n${warns.map((w) => `  - ${w}`).join("\n")}\n`;
+        const patch: Partial<ScenarioRunUiState> = { log: newLog };
+        if (Array.isArray(body.smartTc) && body.smartTc.length > 0)
+          patch.smartTc = body.smartTc;
+        if (body.sessionKind && body.sessionArtifacts?.videoUrl) {
+          patch.lastRecording = {
+            sessionKind: body.sessionKind,
+            artifacts: body.sessionArtifacts,
+          };
         }
-      } else {
-        setLog(
-          (prev) =>
-            prev +
-            "\n녹화 결과를 저장하려면 시나리오를 먼저 만들거나 목록에서 선택하세요.\n",
-        );
+        patchRunUi(targetSid, patch);
+      } else if (targetSid) {
+        patchRunUi(targetSid, {
+          log:
+            baseUi.log +
+            "\n녹화 결과를 반영하려면 해당 시나리오를 목록에서 선택한 뒤 종료하세요.\n",
+        });
       }
     } catch (e) {
-      setLog((prev) => prev + `\n${(e as Error).message}\n`);
+      if (targetSid)
+        patchRunUi(targetSid, {
+          log: `${baseUi.log}\n${(e as Error).message}\n`,
+        });
     } finally {
       setRecordingSessionId(null);
-      setIsRecording(false);
+      setRecordingForScenarioId(null);
       setHistoryRefreshTick((n) => n + 1);
     }
   }
@@ -354,13 +432,14 @@ export default function App() {
 
   async function startRun(): Promise<void> {
     if (!draft) return;
-    setIsStarting(true);
-    setLog("");
-    setSummary(null);
-    setStatus("queued");
+    const sid = draft.id;
+    const ru = runUiByScenario[sid] ?? createDefaultRunUi();
+    patchRunUi(sid, { isStarting: true, log: "", summary: null, status: "queued" });
+    runTargetScenarioRef.current = sid;
     try {
       const hasExcel = (draft.excelTestCases?.length ?? 0) > 0;
-      const baseUrl = hasExcel && recordUrl.trim() !== "" ? recordUrl.trim() : undefined;
+      const baseUrl =
+        hasExcel && ru.recordUrl.trim() !== "" ? ru.recordUrl.trim() : undefined;
       const body =
         draft.mode === "builder"
           ? {
@@ -382,14 +461,18 @@ export default function App() {
       });
       if (!res.ok) throw new Error(`요청 실패 (HTTP ${res.status})`);
       const json = (await res.json()) as { runId: string };
-      setRunId(json.runId);
-      setStatus("running");
+      patchRunUi(sid, {
+        runId: json.runId,
+        status: "running",
+      });
+      setWsRunId(json.runId);
       setHistoryRefreshTick((n) => n + 1);
     } catch (e) {
-      setStatus("error");
-      setLog((e as Error).message);
+      patchRunUi(sid, { status: "error", log: (e as Error).message });
+      runTargetScenarioRef.current = null;
+      setWsRunId(null);
     } finally {
-      setIsStarting(false);
+      patchRunUi(sid, { isStarting: false });
     }
   }
 
@@ -534,32 +617,39 @@ export default function App() {
               )}
 
               <RunPanel
-                status={status}
-                runId={runId}
-                log={log}
-                summary={summary}
+                status={activeRunUi.status}
+                runId={activeRunUi.runId}
+                log={activeRunUi.log}
+                summary={activeRunUi.summary}
                 logEndRef={logEndRef}
-                isStarting={isStarting}
+                isStarting={activeRunUi.isStarting}
                 canRun={canRun}
                 onRun={() => void startRun()}
-                recordUrl={recordUrl}
-                onRecordUrlChange={setRecordUrl}
-                isRecording={isRecording}
+                recordUrl={activeRunUi.recordUrl}
+                onRecordUrlChange={(v) => patchRunUi(draft.id, { recordUrl: v })}
+                isRecording={
+                  recordingSessionId !== null &&
+                  recordingForScenarioId === draft.id
+                }
                 onStartRecord={() => void handleStartRecord()}
                 onStopRecord={() => void handleStopRecord()}
-                lastRecording={lastRecording}
-                smartTc={smartTc}
-                onClearSmartTc={() => setSmartTc(null)}
+                lastRecording={activeRunUi.lastRecording}
+                smartTc={activeRunUi.smartTc}
+                onClearSmartTc={() => patchRunUi(draft.id, { smartTc: null })}
               />
               <RunHistoryPanel
                 scenarioId={draft.id}
                 refreshTrigger={historyRefreshTick}
-                activeRunId={runId}
+                activeRunId={activeRunUi.runId}
                 onDeletedActiveRun={() => {
-                  setRunId(null);
-                  setSummary(null);
-                  setLog("");
-                  setStatus("idle");
+                  patchRunUi(draft.id, {
+                    runId: null,
+                    summary: null,
+                    log: "",
+                    status: "idle",
+                  });
+                  setWsRunId(null);
+                  runTargetScenarioRef.current = null;
                 }}
               />
             </>

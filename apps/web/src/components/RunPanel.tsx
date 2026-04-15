@@ -78,6 +78,10 @@ export function RunPanel({
   const isRunning = status === "running" || isStarting;
   const shots = summary?.artifacts?.screenshotUrls ?? [];
   const runVideos = summary?.artifacts?.videoUrls ?? [];
+  /** 녹화 산출물이 있으면 같은 WebM이 실행 요약에도 잡혀 하단 ‘실행 영상’과 중복된다 */
+  const hasRecordingOutputs =
+    Boolean(lastRecording?.artifacts.videoUrl) ||
+    Boolean(smartTc && smartTc.length > 0);
   const [isNoteVisible, setIsNoteVisible] = useState(false);
 
   return (
@@ -266,7 +270,7 @@ export function RunPanel({
         </section>
       ) : null}
 
-      {runVideos.length > 0 ? (
+      {runVideos.length > 0 && !hasRecordingOutputs ? (
         <section className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
           <h3 className="text-sm font-semibold text-slate-300">
             실행 영상 ({runVideos.length})
