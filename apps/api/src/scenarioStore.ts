@@ -1,7 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import type {
+  DocTcGenerationMeta,
+  GeneratedDocTestCase,
+  RequirementItem,
+  SourceDocumentRef,
+} from "./docTcTypes.js";
 import type { ExcelTestCase } from "./excelTestCaseTypes.js";
+import type { SmartTC } from "./tcGenerator.js";
 
 export type StepType =
   | "goto"
@@ -34,7 +41,7 @@ export interface Step {
   label?: string;
 }
 
-export type ScenarioMode = "builder" | "script";
+export type ScenarioMode = "builder" | "script" | "docTc";
 
 export interface Scenario {
   id: string;
@@ -42,8 +49,20 @@ export interface Scenario {
   mode: ScenarioMode;
   steps: Step[];
   rawScript: string;
-  /** Excel TC parse result (same shape as /api/excel/parse `features`). Absent in legacy files. */
+  /** Internal spreadsheet-like testcase shape used for merged spec generation. */
   excelTestCases?: ExcelTestCase[];
+  /** 녹화 스마트 TC 또는 /api/tc/convert 결과. 빌더 스텝과 함께 유지. */
+  smartTc?: SmartTC[];
+  /** 업로드한 원본 기획 문서 메타데이터 */
+  sourceDocument?: SourceDocumentRef;
+  /** 추출된 문서 원문 텍스트 (OCR/파서 결과) */
+  documentText?: string;
+  /** 문서에서 추출한 구조화 requirement */
+  requirementsExtract?: RequirementItem[];
+  /** requirement 기반으로 생성한 초안 TC */
+  generatedDocTestCases?: GeneratedDocTestCase[];
+  /** 생성기 메타데이터 */
+  docTcGeneration?: DocTcGenerationMeta;
   createdAt: string;
   updatedAt: string;
 }
@@ -103,6 +122,12 @@ export async function createScenario(
     steps?: Step[];
     rawScript?: string;
     excelTestCases?: ExcelTestCase[];
+    smartTc?: SmartTC[];
+    sourceDocument?: SourceDocumentRef;
+    documentText?: string;
+    requirementsExtract?: RequirementItem[];
+    generatedDocTestCases?: GeneratedDocTestCase[];
+    docTcGeneration?: DocTcGenerationMeta;
   },
 ): Promise<Scenario> {
   await ensureScenariosDir(dir);
@@ -117,6 +142,20 @@ export async function createScenario(
     excelTestCases: Array.isArray(partial.excelTestCases)
       ? partial.excelTestCases
       : [],
+    ...(Array.isArray(partial.smartTc) && partial.smartTc.length > 0
+      ? { smartTc: partial.smartTc }
+      : {}),
+    ...(partial.sourceDocument ? { sourceDocument: partial.sourceDocument } : {}),
+    ...(typeof partial.documentText === "string"
+      ? { documentText: partial.documentText }
+      : {}),
+    ...(Array.isArray(partial.requirementsExtract)
+      ? { requirementsExtract: partial.requirementsExtract }
+      : {}),
+    ...(Array.isArray(partial.generatedDocTestCases)
+      ? { generatedDocTestCases: partial.generatedDocTestCases }
+      : {}),
+    ...(partial.docTcGeneration ? { docTcGeneration: partial.docTcGeneration } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -128,7 +167,20 @@ export async function updateScenario(
   dir: string,
   id: string,
   patch: Partial<
-    Pick<Scenario, "name" | "mode" | "steps" | "rawScript" | "excelTestCases">
+    Pick<
+      Scenario,
+      | "name"
+      | "mode"
+      | "steps"
+      | "rawScript"
+      | "excelTestCases"
+      | "smartTc"
+      | "sourceDocument"
+      | "documentText"
+      | "requirementsExtract"
+      | "generatedDocTestCases"
+      | "docTcGeneration"
+    >
   >,
 ): Promise<Scenario | null> {
   const existing = await getScenario(dir, id);
@@ -142,6 +194,18 @@ export async function updateScenario(
     ...(patch.rawScript !== undefined ? { rawScript: patch.rawScript } : {}),
     ...(patch.excelTestCases !== undefined
       ? { excelTestCases: patch.excelTestCases }
+      : {}),
+    ...(patch.smartTc !== undefined ? { smartTc: patch.smartTc } : {}),
+    ...(patch.sourceDocument !== undefined ? { sourceDocument: patch.sourceDocument } : {}),
+    ...(patch.documentText !== undefined ? { documentText: patch.documentText } : {}),
+    ...(patch.requirementsExtract !== undefined
+      ? { requirementsExtract: patch.requirementsExtract }
+      : {}),
+    ...(patch.generatedDocTestCases !== undefined
+      ? { generatedDocTestCases: patch.generatedDocTestCases }
+      : {}),
+    ...(patch.docTcGeneration !== undefined
+      ? { docTcGeneration: patch.docTcGeneration }
       : {}),
     updatedAt: now,
   };

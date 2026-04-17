@@ -7,14 +7,22 @@ import {
   type Step,
   type StepType,
 } from "../types";
+import { ScriptEditor } from "./ScriptEditor";
 import { StepItem } from "./StepItem";
 
 interface Props {
   steps: Step[];
   onChange: (steps: Step[]) => void;
+  rawScript: string;
+  onRawScriptChange: (rawScript: string) => void;
 }
 
-export function ScenarioBuilder({ steps, onChange }: Props) {
+export function ScenarioBuilder({
+  steps,
+  onChange,
+  rawScript,
+  onRawScriptChange,
+}: Props) {
   const [addType, setAddType] = useState<StepType>("goto");
 
   function addStep() {
@@ -128,6 +136,13 @@ export function ScenarioBuilder({ steps, onChange }: Props) {
           {steps.length}개 스텝 구성됨
         </p>
       )}
+
+      <div className="mt-4 flex flex-col gap-2 border-t border-slate-800 pt-4">
+        <h3 className="text-sm font-semibold text-slate-200">
+          Playwright 스크립트
+        </h3>
+        <ScriptEditor value={rawScript} onChange={onRawScriptChange} />
+      </div>
     </section>
   );
 }

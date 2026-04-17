@@ -1,3 +1,4 @@
+import "./loadEnv.js";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import staticPlugin from "@fastify/static";
@@ -9,6 +10,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
+import {
+  convertGeneratedDocTcToExcelCases,
+  extractRequirementsFromText,
+  generateDocTestCases,
+  parseUploadedDocument,
+} from "./docTcGenerator.js";
+import type { ParsedDocumentRecord, RequirementItem } from "./docTcTypes.js";
 import type { ExcelTestCase } from "./excelTestCaseTypes.js";
 import type { Step } from "./scenarioStore.js";
 import {
@@ -21,23 +29,35 @@ import {
 } from "./scenarioStore.js";
 import { generateSpec } from "./specGenerator.js";
 import { codegenScriptToSteps } from "./codegenToSteps.js";
-import { stepsToSmartTC } from "./tcGenerator.js";
+import { stepsToSmartTC, type SmartTC } from "./tcGenerator.js";
 import {
+  addHostedStep,
+  deleteHostedStep,
+  getHostedSteps,
+  patchHostedStep,
+  redoHosted,
+  reorderHostedSteps,
   startCodegenSession,
   startHostedRecordSession,
   stopCodegenSession,
   stopHostedRecordSession,
+  subscribeHosted,
+  undoHosted,
 } from "./recordingSessions.js";
 import {
   parseExcelTestCasesArray,
-  parseTestCasesFromJsonBody,
 } from "./excelBodyValidate.js";
-import { parseExcelBuffer } from "./excelParser.js";
+import {
+  parseDocTcGenerationMeta,
+  parseGenerateDocTcOptions,
+  parseGeneratedDocTestCases,
+  parseRequirementItems,
+  parseSourceDocumentRef,
+} from "./docTcBodyValidate.js";
+import { parseSmartTcArray } from "./smartTcBodyValidate.js";
 import {
   generateMergedSpecFromTestCases,
-  generateSpecFilesFromTestCases,
 } from "./excelPlaywrightGenerator.js";
-import { zipGeneratedSpecs } from "./excelZip.js";
 
 // ---------------------------------------------------------------------------
 // 구성
@@ -84,6 +104,7 @@ interface RunRecord {
 
 const runs = new Map<string, RunRecord>();
 const subscribers = new Map<string, Set<(payload: string) => void>>();
+const parsedDocuments = new Map<string, ParsedDocumentRecord>();
 
 function getRunArtifactsDir(runId: string): string {
   return path.join(dataRunsRoot, runId);
@@ -184,7 +205,7 @@ async function readRunScenarioSpec(runId: string): Promise<string | null> {
   }
 }
 
-/** Spec text the scenario would produce today (Excel TC, then script, then builder). */
+/** Spec text the scenario would produce today (spreadsheet-derived, then script, then builder). */
 async function expectedSpecSnapshotForScenario(
   scenarioId: string,
 ): Promise<string | null> {
@@ -287,12 +308,124 @@ async function resolveSpecContent(body: {
   return undefined;
 }
 
+/** 실행 시점과 동일한 규칙으로 steps / smartTc 스냅샷(산출물 JSON용)을 만든다. */
+async function resolveRunArtifactSnapshot(body: {
+  scenarioId?: string;
+  steps?: Step[];
+  rawScript?: string;
+  excelTestCasesFromBody?: ExcelTestCase[] | null;
+}): Promise<{ steps: Step[]; smartTc: SmartTC[] }> {
+  const fromBody = body.excelTestCasesFromBody;
+  if (fromBody !== undefined && fromBody !== null && fromBody.length > 0) {
+    return { steps: [], smartTc: [] };
+  }
+  if (body.scenarioId) {
+    const s0 = await getScenario(scenariosDir, body.scenarioId);
+    if (s0 && (s0.excelTestCases?.length ?? 0) > 0) {
+      return { steps: [], smartTc: [] };
+    }
+  }
+
+  if (typeof body.rawScript === "string" && body.rawScript.trim() !== "") {
+    if (body.scenarioId) {
+      const s = await getScenario(scenariosDir, body.scenarioId);
+      return {
+        steps: [],
+        smartTc: s?.smartTc?.length ? s.smartTc : [],
+      };
+    }
+    return { steps: [], smartTc: [] };
+  }
+
+  if (Array.isArray(body.steps) && body.steps.length > 0) {
+    const steps = body.steps;
+    if (body.scenarioId) {
+      const s = await getScenario(scenariosDir, body.scenarioId);
+      if (s?.smartTc && s.smartTc.length > 0)
+        return { steps, smartTc: s.smartTc };
+    }
+    return { steps, smartTc: stepsToSmartTC(steps) };
+  }
+
+  if (body.scenarioId) {
+    const s = await getScenario(scenariosDir, body.scenarioId);
+    if (!s) return { steps: [], smartTc: [] };
+    if (s.mode === "script" && s.rawScript.trim() !== "") {
+      return { steps: [], smartTc: s.smartTc?.length ? s.smartTc : [] };
+    }
+    if (s.steps.length > 0) {
+      const steps = s.steps;
+      const smartTc =
+        s.smartTc && s.smartTc.length > 0 ? s.smartTc : stepsToSmartTC(steps);
+      return { steps, smartTc };
+    }
+  }
+
+  return { steps: [], smartTc: [] };
+}
+
 // ---------------------------------------------------------------------------
 // 헬퍼
 // ---------------------------------------------------------------------------
 
 async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
+}
+
+async function readSingleMultipartFile(req: any): Promise<{
+  fileBuffer: Buffer | null;
+  fileName: string;
+  mimeType: string;
+  fields: Record<string, string>;
+}> {
+  let fileBuffer: Buffer | null = null;
+  let fileName = "document.txt";
+  let mimeType = "text/plain";
+  const fields: Record<string, string> = {};
+  for await (const part of req.parts()) {
+    if (part.type === "file") {
+      if (part.fieldname === "file") {
+        fileBuffer = await part.toBuffer();
+        fileName = part.filename || fileName;
+        mimeType = part.mimetype || mimeType;
+      } else {
+        await part.toBuffer();
+      }
+      continue;
+    }
+    fields[part.fieldname] = String(part.value ?? "");
+  }
+  return { fileBuffer, fileName, mimeType, fields };
+}
+
+function sendDocParseError(reply: any, err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message === "unsupported_document_type") {
+    return reply.code(400).send({
+      error: "unsupported_document_type",
+      message: "지원하지 않는 문서 형식입니다. MVP에서는 .txt/.md만 파싱합니다.",
+    });
+  }
+  if (message === "text_extraction_not_supported") {
+    return reply.code(400).send({
+      error: "text_extraction_not_supported",
+      message: "MVP에서는 .pdf/.docx/.hwpx 텍스트 추출을 아직 지원하지 않습니다.",
+    });
+  }
+  if (message === "empty_document") {
+    return reply.code(400).send({
+      error: "empty_document",
+      message: "문서에서 추출된 텍스트가 비어 있습니다.",
+    });
+  }
+  if (message === "garbled_document_text") {
+    return reply.code(400).send({
+      error: "garbled_document_text",
+      message:
+        "문서 텍스트 추출 결과가 깨져 있어 분석을 중단했습니다. 텍스트 기반 PDF인지 확인하거나 DOCX/HWPX 원본으로 다시 업로드해 주세요.",
+    });
+  }
+  return reply.code(400).send({ error: "document_parse_failed", message });
 }
 
 function guessContentType(filePath: string): string {
@@ -393,13 +526,28 @@ async function collectVideoRelPaths(runId: string): Promise<string[]> {
 // 로컬 Playwright 실행 (Docker 없음)
 // ---------------------------------------------------------------------------
 
-async function executeRun(runId: string, specContent?: string): Promise<void> {
+async function executeRun(
+  runId: string,
+  specContent: string | undefined,
+  snapshot: { steps: Step[]; smartTc: SmartTC[] },
+): Promise<void> {
   const run = runs.get(runId);
   if (!run) return;
 
   const hostArtifacts = getRunArtifactsDir(runId);
   await ensureDir(hostArtifacts);
   await ensureDir(path.join(hostArtifacts, "test-results"));
+
+  await fs.writeFile(
+    path.join(hostArtifacts, "steps.json"),
+    JSON.stringify(snapshot.steps, null, 2),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(hostArtifacts, "smartTc.json"),
+    JSON.stringify(snapshot.smartTc, null, 2),
+    "utf8",
+  );
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -480,7 +628,12 @@ async function executeRun(runId: string, specContent?: string): Promise<void> {
 // Fastify 서버
 // ---------------------------------------------------------------------------
 
-const fastify = Fastify({ logger: true });
+const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+
+const fastify = Fastify({
+  logger: true,
+  bodyLimit: MAX_UPLOAD_BYTES,
+});
 
 let appPrepared = false;
 
@@ -492,7 +645,7 @@ async function prepareApp(): Promise<void> {
 
   await fastify.register(cors, { origin: true });
   await fastify.register(multipart, {
-    limits: { fileSize: 25 * 1024 * 1024 },
+    limits: { fileSize: MAX_UPLOAD_BYTES },
   });
   await fastify.register(websocket);
 
@@ -507,10 +660,16 @@ fastify.get("/api/scenarios", async () => {
 fastify.post("/api/scenarios", async (req, reply) => {
   const body = (req.body ?? {}) as {
     name?: string;
-    mode?: "builder" | "script";
+    mode?: "builder" | "script" | "docTc";
     steps?: Step[];
     rawScript?: string;
     excelTestCases?: unknown;
+    smartTc?: unknown;
+    sourceDocument?: unknown;
+    documentText?: string;
+    requirementsExtract?: unknown;
+    generatedDocTestCases?: unknown;
+    docTcGeneration?: unknown;
   };
   let excelTestCases: ExcelTestCase[] | undefined;
   if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
@@ -523,12 +682,79 @@ fastify.post("/api/scenarios", async (req, reply) => {
     }
     excelTestCases = parsed;
   }
+  let smartTc: Parameters<typeof createScenario>[1]["smartTc"];
+  if (Object.prototype.hasOwnProperty.call(body, "smartTc")) {
+    const parsed = parseSmartTcArray(body.smartTc);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_smart_tc",
+        message: "smartTc must be an array of SmartTC objects.",
+      });
+    }
+    smartTc = parsed;
+  }
+  let sourceDocument: Parameters<typeof createScenario>[1]["sourceDocument"];
+  if (Object.prototype.hasOwnProperty.call(body, "sourceDocument")) {
+    const parsed = parseSourceDocumentRef(body.sourceDocument);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_source_document",
+        message: "sourceDocument must be a SourceDocumentRef object.",
+      });
+    }
+    sourceDocument = parsed;
+  }
+  let requirementsExtract:
+    | Parameters<typeof createScenario>[1]["requirementsExtract"]
+    | undefined;
+  if (Object.prototype.hasOwnProperty.call(body, "requirementsExtract")) {
+    const parsed = parseRequirementItems(body.requirementsExtract);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_requirements_extract",
+        message: "requirementsExtract must be an array of RequirementItem objects.",
+      });
+    }
+    requirementsExtract = parsed;
+  }
+  let generatedDocTestCases:
+    | Parameters<typeof createScenario>[1]["generatedDocTestCases"]
+    | undefined;
+  if (Object.prototype.hasOwnProperty.call(body, "generatedDocTestCases")) {
+    const parsed = parseGeneratedDocTestCases(body.generatedDocTestCases);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_generated_doc_test_cases",
+        message: "generatedDocTestCases must be an array of GeneratedDocTestCase objects.",
+      });
+    }
+    generatedDocTestCases = parsed;
+  }
+  let docTcGeneration:
+    | Parameters<typeof createScenario>[1]["docTcGeneration"]
+    | undefined;
+  if (Object.prototype.hasOwnProperty.call(body, "docTcGeneration")) {
+    const parsed = parseDocTcGenerationMeta(body.docTcGeneration);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_doc_tc_generation",
+        message: "docTcGeneration must be a DocTcGenerationMeta object.",
+      });
+    }
+    docTcGeneration = parsed;
+  }
   const scenario = await createScenario(scenariosDir, {
     name: body.name ?? "New scenario",
     mode: body.mode,
     steps: body.steps,
     rawScript: body.rawScript,
     excelTestCases,
+    ...(smartTc !== undefined ? { smartTc } : {}),
+    ...(sourceDocument !== undefined ? { sourceDocument } : {}),
+    ...(typeof body.documentText === "string" ? { documentText: body.documentText } : {}),
+    ...(requirementsExtract !== undefined ? { requirementsExtract } : {}),
+    ...(generatedDocTestCases !== undefined ? { generatedDocTestCases } : {}),
+    ...(docTcGeneration !== undefined ? { docTcGeneration } : {}),
   });
   return reply.code(201).send(scenario);
 });
@@ -544,10 +770,16 @@ fastify.put("/api/scenarios/:id", async (req, reply) => {
   const { id } = req.params as { id: string };
   const body = (req.body ?? {}) as Partial<{
     name: string;
-    mode: "builder" | "script";
+    mode: "builder" | "script" | "docTc";
     steps: Step[];
     rawScript: string;
     excelTestCases: unknown;
+    smartTc: unknown;
+    sourceDocument: unknown;
+    documentText: string;
+    requirementsExtract: unknown;
+    generatedDocTestCases: unknown;
+    docTcGeneration: unknown;
   }>;
   const patch: Parameters<typeof updateScenario>[2] = {};
   if (body.name !== undefined) patch.name = body.name;
@@ -563,6 +795,57 @@ fastify.put("/api/scenarios/:id", async (req, reply) => {
       });
     }
     patch.excelTestCases = parsed;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "smartTc")) {
+    const parsed = parseSmartTcArray(body.smartTc);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_smart_tc",
+        message: "smartTc must be an array of SmartTC objects.",
+      });
+    }
+    patch.smartTc = parsed;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "sourceDocument")) {
+    const parsed = parseSourceDocumentRef(body.sourceDocument);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_source_document",
+        message: "sourceDocument must be a SourceDocumentRef object.",
+      });
+    }
+    patch.sourceDocument = parsed;
+  }
+  if (body.documentText !== undefined) patch.documentText = body.documentText;
+  if (Object.prototype.hasOwnProperty.call(body, "requirementsExtract")) {
+    const parsed = parseRequirementItems(body.requirementsExtract);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_requirements_extract",
+        message: "requirementsExtract must be an array of RequirementItem objects.",
+      });
+    }
+    patch.requirementsExtract = parsed;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "generatedDocTestCases")) {
+    const parsed = parseGeneratedDocTestCases(body.generatedDocTestCases);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_generated_doc_test_cases",
+        message: "generatedDocTestCases must be an array of GeneratedDocTestCase objects.",
+      });
+    }
+    patch.generatedDocTestCases = parsed;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "docTcGeneration")) {
+    const parsed = parseDocTcGenerationMeta(body.docTcGeneration);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_doc_tc_generation",
+        message: "docTcGeneration must be a DocTcGenerationMeta object.",
+      });
+    }
+    patch.docTcGeneration = parsed;
   }
   const updated = await updateScenario(scenariosDir, id, patch);
   if (!updated) return reply.code(404).send({ error: "not_found" });
@@ -603,23 +886,19 @@ fastify.post("/api/tc/convert", async (req, reply) => {
   return { totalSteps: tc.length, tc };
 });
 
-// --- Excel → Playwright (.spec.ts codegen only) ---
+// --- Document → Requirement / TC generation ---
 
-fastify.post("/api/excel/parse", async (req, reply) => {
+fastify.post("/api/docs/parse", async (req, reply) => {
   let fileBuffer: Buffer | null = null;
-  let sheetNamesJson: string | undefined;
+  let fileName = "document.txt";
+  let mimeType = "text/plain";
+  const fields: Record<string, string> = {};
   try {
-    for await (const part of req.parts()) {
-      if (part.type === "file") {
-        if (part.fieldname === "file") {
-          fileBuffer = await part.toBuffer();
-        } else {
-          await part.toBuffer();
-        }
-      } else if (part.fieldname === "sheetNames") {
-        sheetNamesJson = String(part.value ?? "");
-      }
-    }
+    const parsed = await readSingleMultipartFile(req);
+    fileBuffer = parsed.fileBuffer;
+    fileName = parsed.fileName;
+    mimeType = parsed.mimeType;
+    Object.assign(fields, parsed.fields);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return reply.code(400).send({ error: "multipart_read_failed", message });
@@ -629,44 +908,213 @@ fastify.post("/api/excel/parse", async (req, reply) => {
     return reply.code(400).send({ error: "file_required" });
   }
 
-  let sheetNames: string[] | undefined;
-  if (sheetNamesJson && sheetNamesJson.trim()) {
-    try {
-      const parsed = JSON.parse(sheetNamesJson) as unknown;
-      if (
-        !Array.isArray(parsed) ||
-        !parsed.every((x): x is string => typeof x === "string")
-      ) {
-        return reply.code(400).send({ error: "invalid_sheetNames" });
-      }
-      sheetNames = parsed;
-    } catch {
-      return reply.code(400).send({ error: "invalid_sheetNames_json" });
+  try {
+    const parsed = await parseUploadedDocument({
+      fileName,
+      mimeType,
+      buffer: fileBuffer,
+      language:
+        fields.language === "ko" || fields.language === "en"
+          ? fields.language
+          : undefined,
+    });
+    parsedDocuments.set(parsed.document.id, parsed);
+    return {
+      document: parsed.document,
+      extractedText: parsed.extractedText,
+      requirements: parsed.requirements,
+      warnings: parsed.warnings,
+    };
+  } catch (err) {
+    return sendDocParseError(reply, err);
+  }
+});
+
+fastify.post("/api/docs/generate-testcases", async (req, reply) => {
+  const body = (req.body ?? {}) as {
+    documentId?: string;
+    requirements?: unknown;
+    options?: unknown;
+  };
+  const options = parseGenerateDocTcOptions(body.options);
+  if (options === null) {
+    return reply.code(400).send({
+      error: "invalid_options",
+      message: "options must be a GenerateDocTestCasesOptions object.",
+    });
+  }
+
+  let requirements: RequirementItem[] | null = null;
+  if (Array.isArray(body.requirements)) {
+    requirements = parseRequirementItems(body.requirements);
+    if (requirements === null) {
+      return reply.code(400).send({
+        error: "invalid_requirements",
+        message: "requirements must be an array of RequirementItem objects.",
+      });
+    }
+  } else if (typeof body.documentId === "string" && body.documentId.trim()) {
+    requirements = parsedDocuments.get(body.documentId)?.requirements ?? null;
+    if (!requirements) {
+      return reply.code(404).send({ error: "document_not_found" });
     }
   }
 
-  const { features, diagnostics } = parseExcelBuffer(fileBuffer, sheetNames);
-  return { features, diagnostics };
-});
-
-fastify.post("/api/excel/generate", async (req, reply) => {
-  const testCases = parseTestCasesFromJsonBody(req.body);
-  if (!testCases) {
+  if (!requirements || requirements.length === 0) {
     return reply.code(400).send({
-      error: "testCases_required",
-      message:
-        "Body must be { testCases: ExcelTestCase[] } (feature, sheetName, policyId, cases[]).",
+      error: "requirements_required",
+      message: "documentId or requirements is required.",
     });
   }
-  const files = generateSpecFilesFromTestCases(testCases);
-  const zip = await zipGeneratedSpecs(files);
-  return reply
-    .header("content-type", "application/zip")
-    .header(
-      "content-disposition",
-      'attachment; filename="generated-tests.zip"',
-    )
-    .send(zip);
+
+  return await generateDocTestCases(requirements, options);
+});
+
+fastify.post("/api/docs/extract-requirements", async (req, reply) => {
+  const body = (req.body ?? {}) as { text?: string };
+  if (typeof body.text !== "string" || body.text.trim() === "") {
+    return reply.code(400).send({
+      error: "text_required",
+      message: "text is required.",
+    });
+  }
+  const result = await extractRequirementsFromText(body.text);
+  return result;
+});
+
+fastify.post("/api/scenarios/from-doc", async (req, reply) => {
+  let fileBuffer: Buffer | null = null;
+  let fileName = "document.txt";
+  let mimeType = "text/plain";
+  const fields: Record<string, string> = {};
+  try {
+    const parsed = await readSingleMultipartFile(req);
+    fileBuffer = parsed.fileBuffer;
+    fileName = parsed.fileName;
+    mimeType = parsed.mimeType;
+    Object.assign(fields, parsed.fields);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return reply.code(400).send({ error: "multipart_read_failed", message });
+  }
+
+  if (!fileBuffer || fileBuffer.length === 0) {
+    return reply.code(400).send({ error: "file_required" });
+  }
+
+  try {
+    const parsedDoc = await parseUploadedDocument({
+      fileName,
+      mimeType,
+      buffer: fileBuffer,
+      language:
+        fields.language === "ko" || fields.language === "en"
+          ? fields.language
+          : undefined,
+    });
+    parsedDocuments.set(parsedDoc.document.id, parsedDoc);
+    const generated = await generateDocTestCases(parsedDoc.requirements, {
+      includeNegative: fields.includeNegative !== "false",
+      includeBoundary: fields.includeBoundary !== "false",
+      maxCasesPerRequirement: fields.maxCasesPerRequirement
+        ? Number(fields.maxCasesPerRequirement)
+        : undefined,
+    });
+    const scenario = await createScenario(scenariosDir, {
+      name:
+        fields.name?.trim() ||
+        fileName.replace(/\.[^.]+$/, "") ||
+        "New document scenario",
+      mode: "docTc",
+      sourceDocument: parsedDoc.document,
+      requirementsExtract: parsedDoc.requirements,
+      generatedDocTestCases: generated.testCases,
+      docTcGeneration: {
+        ...generated.generation,
+        warnings: [...parsedDoc.warnings, ...generated.generation.warnings],
+      },
+      excelTestCases: convertGeneratedDocTcToExcelCases(generated.testCases),
+    });
+    return reply.code(201).send(scenario);
+  } catch (err) {
+    return sendDocParseError(reply, err);
+  }
+});
+
+fastify.post("/api/scenarios/:id/doc/generate", async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const scenario = await getScenario(scenariosDir, id);
+  if (!scenario) return reply.code(404).send({ error: "not_found" });
+
+  const body = (req.body ?? {}) as {
+    requirements?: unknown;
+    options?: unknown;
+    sourceDocument?: unknown;
+  };
+  const options = parseGenerateDocTcOptions(body.options);
+  if (options === null) {
+    return reply.code(400).send({
+      error: "invalid_options",
+      message: "options must be a GenerateDocTestCasesOptions object.",
+    });
+  }
+
+  let sourceDocument = scenario.sourceDocument;
+  if (Object.prototype.hasOwnProperty.call(body, "sourceDocument")) {
+    const parsed = parseSourceDocumentRef(body.sourceDocument);
+    if (parsed === null) {
+      return reply.code(400).send({
+        error: "invalid_source_document",
+        message: "sourceDocument must be a SourceDocumentRef object.",
+      });
+    }
+    sourceDocument = parsed;
+  }
+
+  let requirements: RequirementItem[] | null = null;
+  if (Object.prototype.hasOwnProperty.call(body, "requirements")) {
+    requirements = parseRequirementItems(body.requirements);
+    if (requirements === null) {
+      return reply.code(400).send({
+        error: "invalid_requirements",
+        message: "requirements must be an array of RequirementItem objects.",
+      });
+    }
+  } else {
+    requirements = scenario.requirementsExtract ?? null;
+  }
+  if (!requirements || requirements.length === 0) {
+    return reply.code(400).send({
+      error: "requirements_required",
+      message: "scenario.requirementsExtract or request requirements is required.",
+    });
+  }
+
+  const generated = await generateDocTestCases(requirements, options);
+  const updated = await updateScenario(scenariosDir, id, {
+    mode: "docTc",
+    ...(sourceDocument ? { sourceDocument } : {}),
+    requirementsExtract: requirements,
+    generatedDocTestCases: generated.testCases,
+    docTcGeneration: generated.generation,
+    excelTestCases: convertGeneratedDocTcToExcelCases(generated.testCases),
+  });
+  return updated;
+});
+
+fastify.post("/api/scenarios/:id/doc/export-excel", async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const scenario = await getScenario(scenariosDir, id);
+  if (!scenario) return reply.code(404).send({ error: "not_found" });
+  const generatedDocTestCases = scenario.generatedDocTestCases ?? [];
+  if (generatedDocTestCases.length === 0) {
+    return reply.code(400).send({
+      error: "generated_doc_test_cases_required",
+      message: "generatedDocTestCases must exist on the scenario.",
+    });
+  }
+  const testCases = convertGeneratedDocTcToExcelCases(generatedDocTestCases);
+  return { testCases };
 });
 
 // --- 녹화 ---
@@ -950,7 +1398,13 @@ fastify.post("/api/runs", async (req, reply) => {
   runs.set(runId, run);
   await persistRunRecord(runId);
 
-  void executeRun(runId, specContent);
+  const snapshot = await resolveRunArtifactSnapshot({
+    scenarioId: body.scenarioId,
+    steps: body.steps,
+    rawScript: body.rawScript,
+    excelTestCasesFromBody,
+  });
+  void executeRun(runId, specContent, snapshot);
 
   return reply.code(202).send({ runId });
 });
@@ -1072,6 +1526,135 @@ fastify.get("/ws/runs/:runId", { websocket: true }, (socket, req) => {
     send(JSON.stringify({ type: "snapshot", status: run.status, log: run.log }));
     socket.on("close", unsubscribe);
   })();
+});
+
+/* Cypress Studio 스타일 실시간 녹화 스튜디오용 WS 채널.
+   접속 시 현재 스냅샷을 내려주고, 이후 서버가 step:added/snapshot/closed 이벤트를 push.
+   클라이언트는 patch/delete/add/reorder/undo/redo JSON 메시지로 편집을 발행한다. */
+interface StudioIncomingBase {
+  type: string;
+}
+interface StudioPatchMsg extends StudioIncomingBase {
+  type: "patch";
+  id: string;
+  patch: Partial<Step>;
+}
+interface StudioDeleteMsg extends StudioIncomingBase {
+  type: "delete";
+  id: string;
+}
+interface StudioAddMsg extends StudioIncomingBase {
+  type: "add";
+  step: Partial<Step> & { type: Step["type"] };
+  atIndex?: number;
+}
+interface StudioReorderMsg extends StudioIncomingBase {
+  type: "reorder";
+  ids: string[];
+}
+interface StudioHistoryMsg extends StudioIncomingBase {
+  type: "undo" | "redo";
+}
+type StudioIncoming =
+  | StudioPatchMsg
+  | StudioDeleteMsg
+  | StudioAddMsg
+  | StudioReorderMsg
+  | StudioHistoryMsg;
+
+function safeStudioMessage(raw: unknown): StudioIncoming | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const t = r.type;
+  if (t === "patch" && typeof r.id === "string" && typeof r.patch === "object" && r.patch !== null) {
+    return { type: "patch", id: r.id, patch: r.patch as Partial<Step> };
+  }
+  if (t === "delete" && typeof r.id === "string") {
+    return { type: "delete", id: r.id };
+  }
+  if (t === "add" && typeof r.step === "object" && r.step !== null) {
+    const step = r.step as Record<string, unknown>;
+    if (typeof step.type === "string") {
+      return {
+        type: "add",
+        step: step as Partial<Step> & { type: Step["type"] },
+        atIndex: typeof r.atIndex === "number" ? r.atIndex : undefined,
+      };
+    }
+  }
+  if (t === "reorder" && Array.isArray(r.ids) && r.ids.every((x) => typeof x === "string")) {
+    return { type: "reorder", ids: r.ids as string[] };
+  }
+  if (t === "undo" || t === "redo") return { type: t };
+  return null;
+}
+
+fastify.get(
+  "/ws/sessions/record/:sessionId",
+  { websocket: true },
+  (socket, req) => {
+    const { sessionId } = req.params as { sessionId: string };
+    const current = getHostedSteps(sessionId);
+    if (current === null) {
+      socket.close(1008, "unknown_session");
+      return;
+    }
+
+    const send = (payload: string) => {
+      try {
+        socket.send(payload);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const unsubscribe = subscribeHosted(sessionId, send);
+    send(JSON.stringify({ type: "snapshot", steps: current }));
+
+    socket.on("message", (raw: Buffer | ArrayBuffer | string) => {
+      let text: string;
+      if (typeof raw === "string") text = raw;
+      else if (Buffer.isBuffer(raw)) text = raw.toString("utf8");
+      else text = Buffer.from(new Uint8Array(raw)).toString("utf8");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return;
+      }
+      const msg = safeStudioMessage(parsed);
+      if (!msg) return;
+      switch (msg.type) {
+        case "patch":
+          patchHostedStep(sessionId, msg.id, msg.patch);
+          break;
+        case "delete":
+          deleteHostedStep(sessionId, msg.id);
+          break;
+        case "add":
+          addHostedStep(sessionId, msg.step, msg.atIndex);
+          break;
+        case "reorder":
+          reorderHostedSteps(sessionId, msg.ids);
+          break;
+        case "undo":
+          undoHosted(sessionId);
+          break;
+        case "redo":
+          redoHosted(sessionId);
+          break;
+      }
+    });
+
+    socket.on("close", unsubscribe);
+  },
+);
+
+fastify.get("/api/sessions/record/:sessionId/steps", async (req, reply) => {
+  const { sessionId } = req.params as { sessionId: string };
+  const steps = getHostedSteps(sessionId);
+  if (steps === null) return reply.code(404).send({ error: "session_not_found" });
+  return { steps };
 });
 
   const webIndex = path.join(webDistDir, "index.html");

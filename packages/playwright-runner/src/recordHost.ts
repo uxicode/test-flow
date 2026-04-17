@@ -51,6 +51,14 @@ function newStep(type: StepOut["type"], partial: Partial<StepOut> = {}): StepOut
   };
 }
 
+/**
+ * API가 stdout을 라인 버퍼로 파싱하여 실시간 스튜디오에 방출한다.
+ * TFSTEP_ADD: 새 스텝 push / TFSTEP_UPDATE: 직전 스텝의 필드 갱신(fill 연속 입력).
+ */
+function emitStep(prefix: "TFSTEP_ADD" | "TFSTEP_UPDATE", step: StepOut): void {
+  process.stdout.write(`${prefix} ${JSON.stringify(step)}\n`);
+}
+
 function handleEvent(steps: StepOut[], ev: QueuedEvent): void {
   if (ev.kind === "__init__") {
     console.log(`[tfRecord] initScript OK @ ${ev.value}`);
@@ -59,28 +67,29 @@ function handleEvent(steps: StepOut[], ev: QueuedEvent): void {
   if ((ev.kind === "click" || ev.kind === "mousedown") && ev.strategy && ev.value != null) {
     const last = steps[steps.length - 1];
     if (last?.type === "click" && last.selectorValue === ev.value) return;
-    steps.push(
-      newStep("click", {
-        selectorStrategy: ev.strategy as SelectorStrategy,
-        selectorValue: ev.value,
-        role: ev.role ?? "button",
-      }),
-    );
+    const step = newStep("click", {
+      selectorStrategy: ev.strategy as SelectorStrategy,
+      selectorValue: ev.value,
+      role: ev.role ?? "button",
+    });
+    steps.push(step);
+    emitStep("TFSTEP_ADD", step);
     console.log(`[tfRecord] click(${ev.kind}): ${ev.strategy}="${ev.value}"`);
   } else if (ev.kind === "fill" && ev.strategy && ev.value != null) {
     const text = ev.text ?? "";
     const last = steps[steps.length - 1];
     if (last?.type === "fill" && last.selectorValue === ev.value) {
       last.inputValue = text;
+      emitStep("TFSTEP_UPDATE", last);
     } else {
-      steps.push(
-        newStep("fill", {
-          selectorStrategy: ev.strategy as SelectorStrategy,
-          selectorValue: ev.value,
-          role: ev.role ?? "textbox",
-          inputValue: text,
-        }),
-      );
+      const step = newStep("fill", {
+        selectorStrategy: ev.strategy as SelectorStrategy,
+        selectorValue: ev.value,
+        role: ev.role ?? "textbox",
+        inputValue: text,
+      });
+      steps.push(step);
+      emitStep("TFSTEP_ADD", step);
       console.log(`[tfRecord] fill: ${ev.strategy}="${ev.value}"`);
     }
   }
@@ -114,23 +123,52 @@ const CAPTURE_SCRIPT = /* js */ `(function(){
     return el.closest('button,a,input,textarea,select,[role="button"],[role="link"],[role="checkbox"],[role="tab"],[role="menuitem"],[role="option"],[role="gridcell"],[role="cell"],[role="row"]') || el;
   }
 
+  /**
+   * 선택자 우선순위: CSS(id/class) 우선 → data-testid → placeholder/aria-label → role/text.
+   * 사용자는 getByText/getByRole 대신 page.locator('.footer-button.footer-button-blue') 같은
+   * 안정적인 CSS 선택자를 원하므로, class 조합을 최우선 후보로 삼는다.
+   */
+  function cssEscape(s) {
+    try { return (window.CSS && window.CSS.escape) ? window.CSS.escape(s) : s; }
+    catch (_) { return s; }
+  }
+
   function describe(el) {
     var e = pickTarget(el);
     if (!e) return null;
     var tag = e.tagName.toLowerCase();
-    var tid = e.getAttribute('data-testid');
-    if (tid) return { strategy: 'testid', value: tid, role: tag === 'input' ? 'textbox' : 'button' };
-    var ph = e.placeholder;
-    if (ph && (tag === 'input' || tag === 'textarea')) return { strategy: 'placeholder', value: ph, role: 'textbox' };
-    var lab = e.getAttribute('aria-label');
-    if (lab) return { strategy: 'label', value: lab, role: e.getAttribute('role') || 'button' };
     var roleAttr = e.getAttribute('role');
+    var defaultRole = roleAttr || (tag === 'input' || tag === 'textarea' ? 'textbox' : (tag === 'a' ? 'link' : 'button'));
+
+    /* 1. id (가장 안정적인 CSS 선택자) */
+    if (e.id) {
+      return { strategy: 'css', value: '#' + cssEscape(e.id), role: defaultRole };
+    }
+    /* 2. class 조합 → .cls1.cls2.cls3 (Tailwind 등 유틸리티 클래스 잡탕을 피하려 앞 3개만) */
+    var rawClasses = (e.getAttribute('class') || '').split(/\\s+/).filter(Boolean);
+    if (rawClasses.length > 0) {
+      var picked = rawClasses.slice(0, 3).map(function(c){ return '.' + cssEscape(c); }).join('');
+      return { strategy: 'css', value: picked, role: defaultRole };
+    }
+    /* 3. data-testid — 명시적으로 지정된 테스트 훅은 CSS 폴백 다음으로 신뢰 */
+    var tid = e.getAttribute('data-testid');
+    if (tid) return { strategy: 'testid', value: tid, role: defaultRole };
+    /* 4. input/textarea placeholder */
+    var ph = e.placeholder;
+    if (ph && (tag === 'input' || tag === 'textarea')) {
+      return { strategy: 'placeholder', value: ph, role: 'textbox' };
+    }
+    /* 5. aria-label */
+    var lab = e.getAttribute('aria-label');
+    if (lab) return { strategy: 'label', value: lab, role: defaultRole };
+    /* 6. role + accessible name (최후의 시맨틱 폴백) */
     var name = (e.innerText || '').trim().slice(0, 120) || e.getAttribute('title') || '';
     if (roleAttr && name) return { strategy: 'role', value: name, role: roleAttr };
-    if (name && (tag === 'button' || tag === 'a')) return { strategy: 'text', value: name.slice(0, 80), role: tag === 'a' ? 'link' : 'button' };
-    if (e.id) return { strategy: 'css', value: '#' + e.id, role: roleAttr || 'button' };
-    var cls = (e.getAttribute('class') || '').split(/\\s+/).filter(Boolean).slice(0, 2).join('.');
-    return { strategy: 'css', value: cls ? tag + '.' + cls : tag, role: roleAttr || 'button' };
+    if (name && (tag === 'button' || tag === 'a')) {
+      return { strategy: 'text', value: name.slice(0, 80), role: tag === 'a' ? 'link' : 'button' };
+    }
+    /* 7. 태그 네임만 남은 경우 */
+    return { strategy: 'css', value: tag, role: defaultRole };
   }
 
   window.addEventListener('click', function(ev) {
@@ -214,7 +252,9 @@ async function main(): Promise<void> {
       if (!u || u === "about:blank") return;
       if (u === lastUrl) return;
       lastUrl = u;
-      steps.push(newStep("goto", { selectorStrategy: "css", selectorValue: u, role: "button" }));
+      const step = newStep("goto", { selectorStrategy: "css", selectorValue: u, role: "button" });
+      steps.push(step);
+      emitStep("TFSTEP_ADD", step);
       console.log(`[tfRecord] goto: ${u.slice(0, 80)}`);
     });
 
@@ -245,9 +285,8 @@ async function main(): Promise<void> {
   console.log(`[tfRecord] stopping... captured ${steps.length} steps`);
   await context.close();
   await browser.close();
-
-  await fs.writeFile(path.join(sessionDir, "steps.json"), JSON.stringify(steps, null, 2), "utf8");
-  console.log(`[tfRecord] steps.json saved (${steps.length} steps)`);
+  /* steps.json은 API(recordingSessions)가 in-memory 상태를 권위적으로 기록한다. */
+  console.log(`[tfRecord] stopped (${steps.length} steps)`);
 }
 
 main().catch((err) => {

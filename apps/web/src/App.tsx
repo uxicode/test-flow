@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExcelPlaywrightPanel } from "./components/ExcelPlaywrightPanel";
+import { DocTcPanel } from "./components/DocTcPanel";
 import { RunHistoryPanel } from "./components/RunHistoryPanel";
 import { RunPanel } from "./components/RunPanel";
 import { ScenarioBuilder } from "./components/ScenarioBuilder";
 import { ScenarioList } from "./components/ScenarioList";
-import { ScriptEditor } from "./components/ScriptEditor";
 import {
   createStep,
   type EditorMode,
@@ -114,6 +113,7 @@ export default function App() {
   /** Increment to refetch run history list */
   const [historyRefreshTick, setHistoryRefreshTick] = useState(0);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const lastLogRef = useRef("");
 
   function patchRunUi(
     scenarioId: string,
@@ -146,8 +146,13 @@ export default function App() {
 
   useEffect(() => {
     if (!draft) return;
-    scrollLog();
-  }, [draft, activeRunUi.log, scrollLog]);
+    const nextLog = activeRunUi.log;
+    const prevLog = lastLogRef.current;
+    if (nextLog.length > prevLog.length) {
+      scrollLog();
+    }
+    lastLogRef.current = nextLog;
+  }, [draft?.id, activeRunUi.log, scrollLog]);
 
   async function refreshList(): Promise<void> {
     const rows = await fetchJson<ScenarioSummary[]>("/api/scenarios");
@@ -228,7 +233,7 @@ export default function App() {
     });
     await refreshList();
     setDraft(created);
-    setEditorTab(created.mode);
+    setEditorTab(created.mode === "docTc" ? "docTc" : "builder");
   }
 
   async function handleRename(id: string, name: string): Promise<void> {
@@ -266,14 +271,73 @@ export default function App() {
 
   async function handleSelect(id: string): Promise<void> {
     const s = await fetchJson<Scenario>(`/api/scenarios/${id}`);
-    setDraft({ ...s, excelTestCases: s.excelTestCases ?? [] });
-    setEditorTab(s.mode);
+    let smartTcOut = s.smartTc;
+    let persistDerived = false;
+    if (
+      (!smartTcOut || smartTcOut.length === 0) &&
+      s.mode === "builder" &&
+      s.steps.length > 0
+    ) {
+      const res = await fetch("/api/tc/convert", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ steps: s.steps }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { tc?: SmartTC[] };
+        if (data.tc && data.tc.length > 0) {
+          smartTcOut = data.tc;
+          persistDerived = true;
+        }
+      }
+    }
+    setDraft({
+      ...s,
+      excelTestCases: s.excelTestCases ?? [],
+      smartTc: smartTcOut,
+    });
+    setEditorTab(s.mode === "docTc" ? "docTc" : "builder");
+    patchRunUi(id, { smartTc: smartTcOut ?? null });
+
+    if (persistDerived && smartTcOut && smartTcOut.length > 0) {
+      try {
+        const updated = await fetchJson<Scenario>(`/api/scenarios/${id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ smartTc: smartTcOut }),
+        });
+        setDraft((d) =>
+          d?.id === id
+            ? { ...updated, excelTestCases: updated.excelTestCases ?? [] }
+            : d,
+        );
+        patchRunUi(id, { smartTc: updated.smartTc ?? smartTcOut });
+      } catch {
+        /* 유지: 로컬 draft에만 복원된 smartTc */
+      }
+    }
   }
 
   async function handleSave(): Promise<void> {
     if (!draft) return;
     setSaveBusy(true);
     try {
+      let smartTcOut = draft.smartTc ?? [];
+      if (
+        draft.mode === "builder" &&
+        draft.steps.length > 0 &&
+        smartTcOut.length === 0
+      ) {
+        const res = await fetch("/api/tc/convert", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ steps: draft.steps }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { tc?: SmartTC[] };
+          if (data.tc && data.tc.length > 0) smartTcOut = data.tc;
+        }
+      }
       const updated = await fetchJson<Scenario>(`/api/scenarios/${draft.id}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -283,9 +347,23 @@ export default function App() {
           steps: draft.steps,
           rawScript: draft.rawScript,
           excelTestCases: draft.excelTestCases ?? [],
+          smartTc: smartTcOut,
+          sourceDocument: draft.sourceDocument,
+          documentText: draft.documentText,
+          requirementsExtract: draft.requirementsExtract ?? [],
+          generatedDocTestCases: draft.generatedDocTestCases ?? [],
+          docTcGeneration: draft.docTcGeneration,
         }),
       });
-      setDraft(updated);
+      setDraft({
+        ...updated,
+        excelTestCases: updated.excelTestCases ?? [],
+        smartTc: updated.smartTc ?? smartTcOut,
+      });
+      if (draft.id)
+        patchRunUi(draft.id, {
+          smartTc: smartTcOut.length > 0 ? smartTcOut : null,
+        });
       await refreshList();
     } finally {
       setSaveBusy(false);
@@ -319,8 +397,18 @@ export default function App() {
 
   function switchTab(tab: EditorMode): void {
     setEditorTab(tab);
-    if (tab === "excel" || !draft) return;
-    setDraft({ ...draft, mode: tab });
+    if (!draft) return;
+    if (tab === "docTc") {
+      setDraft({ ...draft, mode: "docTc" });
+    } else if (draft.mode === "docTc") {
+      const nextMode =
+        draft.steps.length > 0
+          ? "builder"
+          : draft.rawScript.trim() !== ""
+            ? "script"
+            : "builder";
+      setDraft({ ...draft, mode: nextMode });
+    }
   }
 
   async function handleStartRecord(): Promise<void> {
@@ -383,20 +471,43 @@ export default function App() {
           });
           return;
         }
-        setDraft({
-          ...draft,
-          rawScript: script,
-          mode: "builder",
-          steps: normalized,
-          excelTestCases: draft.excelTestCases ?? [],
-        });
-        setEditorTab("builder");
+        const smartTcPersist = Array.isArray(body.smartTc) ? body.smartTc : [];
         let newLog = baseUi.log;
         if (warns.length > 0)
           newLog += `\n녹화 참고:\n${warns.map((w) => `  - ${w}`).join("\n")}\n`;
+        try {
+          const updated = await fetchJson<Scenario>(`/api/scenarios/${targetSid}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name: draft.name,
+              mode: "builder",
+              steps: normalized,
+              rawScript: script,
+              excelTestCases: draft.excelTestCases ?? [],
+              smartTc: smartTcPersist,
+            }),
+          });
+          setDraft({
+            ...updated,
+            excelTestCases: updated.excelTestCases ?? [],
+            smartTc: updated.smartTc ?? smartTcPersist,
+          });
+          await refreshList();
+        } catch {
+          setDraft({
+            ...draft,
+            rawScript: script,
+            mode: "builder",
+            steps: normalized,
+            excelTestCases: draft.excelTestCases ?? [],
+            smartTc: smartTcPersist,
+          });
+        }
+        setEditorTab("builder");
         const patch: Partial<ScenarioRunUiState> = { log: newLog };
-        if (Array.isArray(body.smartTc) && body.smartTc.length > 0)
-          patch.smartTc = body.smartTc;
+        patch.smartTc =
+          smartTcPersist.length > 0 ? smartTcPersist : null;
         if (body.sessionKind && body.sessionArtifacts?.videoUrl) {
           patch.lastRecording = {
             sessionKind: body.sessionKind,
@@ -578,41 +689,31 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => switchTab("script")}
+                  onClick={() => switchTab("docTc")}
                   className={`rounded px-3 py-1.5 text-sm font-medium ${
-                    editorTab === "script"
+                    editorTab === "docTc"
                       ? "bg-slate-800 text-sky-300"
                       : "text-slate-400 hover:text-slate-200"
                   }`}
                 >
-                  스크립트
+                  문서 TC
                 </button>
-                <button
-                  type="button"
-                  onClick={() => switchTab("excel")}
-                  className={`rounded px-3 py-1.5 text-sm font-medium ${
-                    editorTab === "excel"
-                      ? "bg-slate-800 text-sky-300"
-                      : "text-slate-400 hover:text-slate-200"
-                  }`}
-                >
-                  Excel TC
-                </button>
+                
               </div>
 
               {editorTab === "builder" ? (
-                <ScenarioBuilder steps={draft.steps} onChange={setSteps} />
-              ) : editorTab === "script" ? (
-                <ScriptEditor
-                  value={draft.rawScript}
-                  onChange={(rawScript) => updateDraft({ rawScript })}
+                <ScenarioBuilder
+                  steps={draft.steps}
+                  onChange={setSteps}
+                  rawScript={draft.rawScript}
+                  onRawScriptChange={(rawScript) =>
+                    updateDraft({ rawScript })
+                  }
                 />
               ) : (
-                <ExcelPlaywrightPanel
-                  excelTestCases={draft.excelTestCases ?? []}
-                  onExcelTestCasesChange={(excelTestCases) =>
-                    updateDraft({ excelTestCases })
-                  }
+                <DocTcPanel
+                  scenario={draft}
+                  onScenarioUpdated={(scenario) => setDraft(scenario)}
                 />
               )}
 
@@ -633,9 +734,20 @@ export default function App() {
                 }
                 onStartRecord={() => void handleStartRecord()}
                 onStopRecord={() => void handleStopRecord()}
+                liveSessionId={
+                  recordingForScenarioId === draft.id ? recordingSessionId : null
+                }
                 lastRecording={activeRunUi.lastRecording}
-                smartTc={activeRunUi.smartTc}
-                onClearSmartTc={() => patchRunUi(draft.id, { smartTc: null })}
+                smartTc={
+                  draft.smartTc && draft.smartTc.length > 0
+                    ? draft.smartTc
+                    : activeRunUi.smartTc
+                }
+                onClearSmartTc={() => {
+                  patchRunUi(draft.id, { smartTc: null });
+                  updateDraft({ smartTc: [] });
+                }}
+                scenarioName={draft.name}
               />
               <RunHistoryPanel
                 scenarioId={draft.id}

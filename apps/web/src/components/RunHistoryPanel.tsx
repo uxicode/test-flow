@@ -311,6 +311,68 @@ export function RunHistoryPanel({
     }
   }
 
+  async function openRunStepsJson(runId: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/runs/${runId}/artifacts/steps.json`);
+      if (!res.ok) {
+        setScriptModal({
+          runId,
+          text:
+            res.status === 404
+              ? "(이 실행에는 steps.json이 없습니다. 이전에 저장된 실행이거나 산출물이 없을 수 있습니다.)"
+              : `(불러오기 실패: ${res.status})`,
+          title: "steps.json",
+        });
+        return;
+      }
+      const raw = await res.text();
+      let text = raw;
+      try {
+        text = JSON.stringify(JSON.parse(raw), null, 2);
+      } catch {
+        /* keep raw */
+      }
+      setScriptModal({ runId, text, title: "steps.json" });
+    } catch {
+      setScriptModal({
+        runId,
+        text: "(불러오기 실패)",
+        title: "steps.json",
+      });
+    }
+  }
+
+  async function openRunSmartTcJson(runId: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/runs/${runId}/artifacts/smartTc.json`);
+      if (!res.ok) {
+        setScriptModal({
+          runId,
+          text:
+            res.status === 404
+              ? "(이 실행에는 smartTc.json이 없습니다. 이전에 저장된 실행이거나 산출물이 없을 수 있습니다.)"
+              : `(불러오기 실패: ${res.status})`,
+          title: "smartTc.json",
+        });
+        return;
+      }
+      const raw = await res.text();
+      let text = raw;
+      try {
+        text = JSON.stringify(JSON.parse(raw), null, 2);
+      } catch {
+        /* keep raw */
+      }
+      setScriptModal({ runId, text, title: "smartTc.json" });
+    } catch {
+      setScriptModal({
+        runId,
+        text: "(불러오기 실패)",
+        title: "smartTc.json",
+      });
+    }
+  }
+
   async function removeRun(runId: string): Promise<void> {
     if (
       !confirm(
@@ -581,6 +643,20 @@ export function RunHistoryPanel({
                   onClick={() => void openScript(r.id)}
                 >
                   스크립트
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-violet-300 underline"
+                  onClick={() => void openRunStepsJson(r.id)}
+                >
+                  steps.json
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-emerald-300 underline"
+                  onClick={() => void openRunSmartTcJson(r.id)}
+                >
+                  smartTc.json
                 </button>
                 <button
                   type="button"

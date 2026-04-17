@@ -1,5 +1,7 @@
 import { useState, type RefObject } from "react";
 import type { SmartTC } from "../types";
+import { downloadSmartTcExcel } from "../utils/smartTcToExcel";
+import { LiveStudioPanel } from "./LiveStudioPanel";
 import { SmartTcTable } from "./SmartTcTable";
 
 type RunStatus = "queued" | "running" | "passed" | "failed" | "error" | "idle";
@@ -49,12 +51,14 @@ interface Props {
   isRecording: boolean;
   onStartRecord: () => void;
   onStopRecord: () => void;
+  liveSessionId: string | null;
   lastRecording: {
     sessionKind: "codegen" | "hosted";
     artifacts: { videoUrl: string };
   } | null;
   smartTc: SmartTC[] | null;
   onClearSmartTc: () => void;
+  scenarioName: string;
 }
 
 export function RunPanel({
@@ -71,9 +75,11 @@ export function RunPanel({
   isRecording,
   onStartRecord,
   onStopRecord,
+  liveSessionId,
   lastRecording,
   smartTc,
   onClearSmartTc,
+  scenarioName,
 }: Props) {
   const isRunning = status === "running" || isStarting;
   const shots = summary?.artifacts?.screenshotUrls ?? [];
@@ -180,6 +186,14 @@ export function RunPanel({
         </div>
       </div>
 
+      {isRecording && liveSessionId ? (
+        <LiveStudioPanel
+          sessionId={liveSessionId}
+          recordUrl={recordUrl}
+          onStop={onStopRecord}
+        />
+      ) : null}
+
       {lastRecording?.artifacts.videoUrl ||
       (smartTc && smartTc.length > 0) ? (
         <section className="flex flex-col gap-3 rounded-xl border border-violet-900/40 bg-gradient-to-b from-violet-950/25 to-emerald-950/15 p-4">
@@ -228,9 +242,25 @@ export function RunPanel({
 
           {smartTc && smartTc.length > 0 ? (
             <div className="flex flex-col gap-2 border-t border-slate-800/80 pt-3">
-              <p className="text-xs font-medium text-emerald-300/90">
-                스마트 TC ({smartTc.length}개)
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-medium text-emerald-300/90">
+                  스마트 TC ({smartTc.length}개)
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const base = scenarioName.trim() || "smart-tc";
+                    downloadSmartTcExcel(smartTc, {
+                      policyId: "SMART-TC",
+                      sheetName: "Sheet1",
+                      fileName: `${base}-smartTc`,
+                    });
+                  }}
+                  className="rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-900/50"
+                >
+                  엑셀(.xlsx) 다운로드
+                </button>
+              </div>
               <SmartTcTable items={smartTc} />
               <details className="text-xs text-slate-500">
                 <summary className="cursor-pointer select-none hover:text-slate-400">
