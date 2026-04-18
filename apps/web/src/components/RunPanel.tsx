@@ -1,23 +1,9 @@
 import { useState, type RefObject } from "react";
+import type { RunStatus, RunSummary } from "../domain/run-types";
 import type { SmartTC } from "../types";
 import { downloadSmartTcExcel } from "../utils/smartTcToExcel";
 import { LiveStudioPanel } from "./LiveStudioPanel";
 import { SmartTcTable } from "./SmartTcTable";
-
-type RunStatus = "queued" | "running" | "passed" | "failed" | "error" | "idle";
-
-interface RunSummary {
-  id: string;
-  status: RunStatus;
-  exitCode: number | null;
-  errorMessage?: string;
-  artifacts?: {
-    reportIndex: string;
-    testResultsDir: string;
-    screenshotUrls?: string[];
-    videoUrls?: string[];
-  };
-}
 
 const STATUS_STYLES: Record<RunStatus, string> = {
   idle: "bg-slate-700 text-slate-300",
@@ -57,7 +43,6 @@ interface Props {
     artifacts: { videoUrl: string };
   } | null;
   smartTc: SmartTC[] | null;
-  onClearSmartTc: () => void;
   scenarioName: string;
 }
 
@@ -78,7 +63,6 @@ export function RunPanel({
   liveSessionId,
   lastRecording,
   smartTc,
-  onClearSmartTc,
   scenarioName,
 }: Props) {
   const isRunning = status === "running" || isStarting;
@@ -89,6 +73,7 @@ export function RunPanel({
     Boolean(lastRecording?.artifacts.videoUrl) ||
     Boolean(smartTc && smartTc.length > 0);
   const [isNoteVisible, setIsNoteVisible] = useState(false);
+  const [isSmartTcOpen, setIsSmartTcOpen] = useState(true);
 
   return (
     <div className="flex flex-col gap-4">
@@ -207,15 +192,6 @@ export function RunPanel({
                 시나리오를 저장하면 실행 기록에도 동일 산출물이 남습니다.
               </p>
             </div>
-            {smartTc && smartTc.length > 0 ? (
-              <button
-                type="button"
-                onClick={onClearSmartTc}
-                className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-300"
-              >
-                Smart TC 닫기
-              </button>
-            ) : null}
           </div>
 
           {lastRecording?.artifacts.videoUrl ? (
@@ -242,34 +218,61 @@ export function RunPanel({
 
           {smartTc && smartTc.length > 0 ? (
             <div className="flex flex-col gap-2 border-t border-slate-800/80 pt-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-medium text-emerald-300/90">
+              <button
+                type="button"
+                onClick={() => setIsSmartTcOpen((open) => !open)}
+                aria-expanded={isSmartTcOpen}
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-700/80 bg-slate-900/50 px-3 py-2 text-left transition-colors hover:border-slate-600 hover:bg-slate-800/40"
+              >
+                <span className="text-xs font-medium text-emerald-300/90">
                   스마트 TC ({smartTc.length}개)
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const base = scenarioName.trim() || "smart-tc";
-                    downloadSmartTcExcel(smartTc, {
-                      policyId: "SMART-TC",
-                      sheetName: "Sheet1",
-                      fileName: `${base}-smartTc`,
-                    });
-                  }}
-                  className="rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-900/50"
+                  <span className="ml-2 font-normal text-slate-500">
+                    {isSmartTcOpen ? "접기" : "펼치기"}
+                  </span>
+                </span>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isSmartTcOpen ? "rotate-180" : ""}`}
+                  aria-hidden
                 >
-                  엑셀(.xlsx) 다운로드
-                </button>
-              </div>
-              <SmartTcTable items={smartTc} />
-              <details className="text-xs text-slate-500">
-                <summary className="cursor-pointer select-none hover:text-slate-400">
-                  smartTc.json 원문 보기
-                </summary>
-                <pre className="mt-2 max-h-64 overflow-auto rounded-lg border border-slate-800 bg-slate-900/60 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-                  {JSON.stringify(smartTc, null, 2)}
-                </pre>
-              </details>
+                  <path
+                    fillRule="evenodd"
+                    d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.938a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </button>
+              {isSmartTcOpen ? (
+                <div className="flex flex-col gap-2 rounded-lg border border-slate-800/90 bg-slate-950/30 p-3">
+                  <div className="flex flex-wrap justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const base = scenarioName.trim() || "smart-tc";
+                        downloadSmartTcExcel(smartTc, {
+                          policyId: "SMART-TC",
+                          sheetName: "Sheet1",
+                          fileName: `${base}-smartTc`,
+                        });
+                      }}
+                      className="rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-900/50"
+                    >
+                      엑셀(.xlsx) 다운로드
+                    </button>
+                  </div>
+                  <SmartTcTable items={smartTc} />
+                  <details className="text-xs text-slate-500">
+                    <summary className="cursor-pointer select-none hover:text-slate-400">
+                      smartTc.json 원문 보기
+                    </summary>
+                    <pre className="mt-2 max-h-64 overflow-auto rounded-lg border border-slate-800 bg-slate-900/60 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
+                      {JSON.stringify(smartTc, null, 2)}
+                    </pre>
+                  </details>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </section>
