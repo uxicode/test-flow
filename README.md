@@ -61,23 +61,8 @@ pnpm electron:build
 
 - 시나리오: `GET/POST /api/scenarios`, `GET/PUT/DELETE /api/scenarios/:id`
 - Smart TC: `GET /api/scenarios/:id/tc`, `POST /api/tc/convert`
-- 문서 기반 TC(MVP): `POST /api/docs/parse` (multipart `file`), `POST /api/docs/generate-testcases`, `POST /api/scenarios/from-doc`, `POST /api/scenarios/:id/doc/generate`, `POST /api/scenarios/:id/doc/export-excel`
 - 녹화: `POST /api/sessions/record` (`url`, `mode`: `hosted` | `codegen`), `POST /api/sessions/:sessionId/stop`
 - 실행: `POST /api/runs`, `GET /api/runs/:runId`, 산출물 라우트, `GET /ws/runs/:runId`
-
-### 문서 기반 TC MVP
-
-- 현재 문서 추출은 **`.txt`, `.md`, `.pdf`, `.docx`, `.hwpx`**를 지원합니다.
-- 문서 업로드 한도는 현재 서버 기준 **64MB**입니다.
-- `pdf`는 텍스트 기반 PDF 중심의 MVP 추출기입니다. 스캔 PDF나 복잡한 레이아웃은 OCR/전용 파서 없이 정확도가 낮을 수 있습니다.
-- `POST /api/docs/parse`는 문서에서 requirement 후보를 추출해 메모리 캐시에 보관하고 `document.id`를 반환합니다.
-- `POST /api/docs/generate-testcases`는 `documentId` 또는 `requirements` 배열을 받아 문서 기반 TC 초안을 생성합니다.
-- `POST /api/scenarios/from-doc`는 업로드부터 requirement/TC 생성, `Scenario.mode = "docTc"` 저장까지 한 번에 수행합니다.
-- 생성된 `generatedDocTestCases`는 `POST /api/scenarios/:id/doc/export-excel`로 엑셀 형식으로 내보낼 수 있습니다.
-- 웹 UI에서는 시나리오 편집 화면의 **문서 TC** 탭에서 문서 업로드, requirement 확인, TC 생성을 수행할 수 있습니다.
-- 웹 UI의 **문서 TC** 탭에서 생성된 TC를 `xlsx`, `md`, `json`으로 바로 다운로드할 수 있습니다.
-- 서버에 `OPENAI_API_KEY`가 설정되면 OpenAI Responses API의 Structured Outputs로 requirement/TC 생성을 시도합니다. 실패하거나 키가 없으면 규칙 기반 fallback을 사용합니다.
-- 선택 환경 변수: `TESTFLOW_DOC_TC_MODEL` (`gpt-4.1-mini` 기본값)
 
 ## 모노레포 구조
 

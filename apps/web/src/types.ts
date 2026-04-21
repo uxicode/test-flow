@@ -145,68 +145,13 @@ export const EXAMPLE_SCENARIO: Step[] = [
   { ...createStep("screenshot"), label: "homepage" },
 ];
 
-export type EditorMode = "builder" | "docTc";
+export type EditorMode = "builder";
 
 export interface ScenarioSummary {
   id: string;
   name: string;
-  mode: "builder" | "script" | "docTc";
+  mode: "builder" | "script";
   updatedAt: string;
-}
-
-export type SourceDocumentType = "pdf" | "docx" | "md" | "txt" | "hwpx";
-
-export interface SourceDocumentRef {
-  id: string;
-  fileName: string;
-  mimeType: string;
-  type: SourceDocumentType;
-  size: number;
-  uploadedAt: string;
-  textExtracted: boolean;
-  language?: "ko" | "en";
-  checksum?: string;
-}
-
-export interface RequirementSourceSpan {
-  page?: number;
-  heading?: string;
-  quote?: string;
-}
-
-export interface RequirementItem {
-  id: string;
-  sectionTitle?: string;
-  feature?: string;
-  actor?: string;
-  preconditions: string[];
-  flow: string[];
-  businessRules: string[];
-  acceptanceCriteria: string[];
-  exceptions: string[];
-  sourceSpans?: RequirementSourceSpan[];
-}
-
-export interface GeneratedDocTestCase {
-  id: string;
-  title: string;
-  feature: string;
-  objective?: string;
-  preconditions: string[];
-  steps: string[];
-  expectedResults: string[];
-  priority?: "P0" | "P1" | "P2" | "P3";
-  type?: "positive" | "negative" | "boundary" | "exception";
-  requirementIds: string[];
-  reviewStatus?: "draft" | "reviewed" | "approved";
-}
-
-export interface DocTcGenerationMeta {
-  provider: string;
-  model: string;
-  promptVersion: string;
-  generatedAt: string;
-  warnings: string[];
 }
 
 /** Internal spreadsheet-like testcase shape used for merged spec generation. */
@@ -241,11 +186,6 @@ export interface Scenario extends ScenarioSummary {
   excelTestCases?: ExcelTestCase[];
   /** 녹화 smartTc 또는 서버에서 스텝으로 복원한 SmartTC */
   smartTc?: SmartTC[];
-  sourceDocument?: SourceDocumentRef;
-  documentText?: string;
-  requirementsExtract?: RequirementItem[];
-  generatedDocTestCases?: GeneratedDocTestCase[];
-  docTcGeneration?: DocTcGenerationMeta;
 }
 
 // ---------------------------------------------------------------------------

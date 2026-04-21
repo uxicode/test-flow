@@ -1,12 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type {
-  DocTcGenerationMeta,
-  GeneratedDocTestCase,
-  RequirementItem,
-  SourceDocumentRef,
-} from "./docTcTypes.js";
 import type { ExcelTestCase } from "./excelTestCaseTypes.js";
 import type { SmartTC } from "./tcGenerator.js";
 
@@ -41,7 +35,7 @@ export interface Step {
   label?: string;
 }
 
-export type ScenarioMode = "builder" | "script" | "docTc";
+export type ScenarioMode = "builder" | "script";
 
 export interface Scenario {
   id: string;
@@ -53,16 +47,6 @@ export interface Scenario {
   excelTestCases?: ExcelTestCase[];
   /** 녹화 스마트 TC 또는 /api/tc/convert 결과. 빌더 스텝과 함께 유지. */
   smartTc?: SmartTC[];
-  /** 업로드한 원본 기획 문서 메타데이터 */
-  sourceDocument?: SourceDocumentRef;
-  /** 추출된 문서 원문 텍스트 (OCR/파서 결과) */
-  documentText?: string;
-  /** 문서에서 추출한 구조화 requirement */
-  requirementsExtract?: RequirementItem[];
-  /** requirement 기반으로 생성한 초안 TC */
-  generatedDocTestCases?: GeneratedDocTestCase[];
-  /** 생성기 메타데이터 */
-  docTcGeneration?: DocTcGenerationMeta;
   createdAt: string;
   updatedAt: string;
 }
@@ -123,11 +107,6 @@ export async function createScenario(
     rawScript?: string;
     excelTestCases?: ExcelTestCase[];
     smartTc?: SmartTC[];
-    sourceDocument?: SourceDocumentRef;
-    documentText?: string;
-    requirementsExtract?: RequirementItem[];
-    generatedDocTestCases?: GeneratedDocTestCase[];
-    docTcGeneration?: DocTcGenerationMeta;
   },
 ): Promise<Scenario> {
   await ensureScenariosDir(dir);
@@ -145,17 +124,6 @@ export async function createScenario(
     ...(Array.isArray(partial.smartTc) && partial.smartTc.length > 0
       ? { smartTc: partial.smartTc }
       : {}),
-    ...(partial.sourceDocument ? { sourceDocument: partial.sourceDocument } : {}),
-    ...(typeof partial.documentText === "string"
-      ? { documentText: partial.documentText }
-      : {}),
-    ...(Array.isArray(partial.requirementsExtract)
-      ? { requirementsExtract: partial.requirementsExtract }
-      : {}),
-    ...(Array.isArray(partial.generatedDocTestCases)
-      ? { generatedDocTestCases: partial.generatedDocTestCases }
-      : {}),
-    ...(partial.docTcGeneration ? { docTcGeneration: partial.docTcGeneration } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -175,11 +143,6 @@ export async function updateScenario(
       | "rawScript"
       | "excelTestCases"
       | "smartTc"
-      | "sourceDocument"
-      | "documentText"
-      | "requirementsExtract"
-      | "generatedDocTestCases"
-      | "docTcGeneration"
     >
   >,
 ): Promise<Scenario | null> {
@@ -196,17 +159,6 @@ export async function updateScenario(
       ? { excelTestCases: patch.excelTestCases }
       : {}),
     ...(patch.smartTc !== undefined ? { smartTc: patch.smartTc } : {}),
-    ...(patch.sourceDocument !== undefined ? { sourceDocument: patch.sourceDocument } : {}),
-    ...(patch.documentText !== undefined ? { documentText: patch.documentText } : {}),
-    ...(patch.requirementsExtract !== undefined
-      ? { requirementsExtract: patch.requirementsExtract }
-      : {}),
-    ...(patch.generatedDocTestCases !== undefined
-      ? { generatedDocTestCases: patch.generatedDocTestCases }
-      : {}),
-    ...(patch.docTcGeneration !== undefined
-      ? { docTcGeneration: patch.docTcGeneration }
-      : {}),
     updatedAt: now,
   };
   await fs.writeFile(scenarioPath(dir, id), JSON.stringify(next, null, 2), "utf8");

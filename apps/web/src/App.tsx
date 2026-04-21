@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppHeader } from "./components/AppHeader";
-import { DocTcPanel } from "./components/DocTcPanel";
-import { EditorModeTabs } from "./components/EditorModeTabs";
+import { DocTcModal } from "./components/DocTcModal";
 import { QuickStartPanel } from "./components/QuickStartPanel";
 import { RunHistoryPanel } from "./components/RunHistoryPanel";
 import { RunPanel } from "./components/RunPanel";
@@ -24,7 +23,6 @@ import { ScenarioApi } from "./services/scenario-api";
 import { SmartTcFromStepsService } from "./services/smart-tc-from-steps";
 import {
   createStep,
-  type EditorMode,
   normalizeStepFromApi,
   type Scenario,
   type ScenarioSummary,
@@ -37,7 +35,6 @@ const smartTcService = new SmartTcFromStepsService();
 export default function App() {
   const [list, setList] = useState<ScenarioSummary[]>([]);
   const [draft, setDraft] = useState<Scenario | null>(null);
-  const [editorTab, setEditorTab] = useState<EditorMode>("builder");
   const [saveBusy, setSaveBusy] = useState(false);
 
   const [runUiByScenario, setRunUiByScenario] = useState<
@@ -53,6 +50,7 @@ export default function App() {
   const [wsRunId, setWsRunId] = useState<string | null>(null);
   const runTargetScenarioRef = useRef<string | null>(null);
   const [historyRefreshTick, setHistoryRefreshTick] = useState(0);
+  const [isDocTcOpen, setIsDocTcOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const lastLogRef = useRef("");
 
@@ -136,7 +134,6 @@ export default function App() {
     });
     await refreshList();
     setDraft(created);
-    setEditorTab(created.mode === "docTc" ? "docTc" : "builder");
   }
 
   async function handleRename(id: string, name: string): Promise<void> {
@@ -164,7 +161,6 @@ export default function App() {
     });
     await refreshList();
     setDraft(created);
-    setEditorTab("builder");
     if (url.length > 0) patchRunUi(created.id, { recordUrl: url });
   }
 
@@ -188,7 +184,6 @@ export default function App() {
       excelTestCases: s.excelTestCases ?? [],
       smartTc: smartTcOut,
     });
-    setEditorTab(s.mode === "docTc" ? "docTc" : "builder");
     patchRunUi(id, { smartTc: smartTcOut ?? null });
 
     if (persistDerived && smartTcOut && smartTcOut.length > 0) {
@@ -226,11 +221,6 @@ export default function App() {
         rawScript: draft.rawScript,
         excelTestCases: draft.excelTestCases ?? [],
         smartTc: smartTcOut,
-        sourceDocument: draft.sourceDocument,
-        documentText: draft.documentText,
-        requirementsExtract: draft.requirementsExtract ?? [],
-        generatedDocTestCases: draft.generatedDocTestCases ?? [],
-        docTcGeneration: draft.docTcGeneration,
       });
       setDraft({
         ...updated,
@@ -253,7 +243,6 @@ export default function App() {
     await refreshList();
     if (draft?.id === id) {
       setDraft(null);
-      setEditorTab("builder");
     }
     setRunUiByScenario((prev) => {
       const next = { ...prev };
@@ -270,22 +259,6 @@ export default function App() {
   function setSteps(steps: Step[]): void {
     if (!draft) return;
     setDraft({ ...draft, steps });
-  }
-
-  function switchTab(tab: EditorMode): void {
-    setEditorTab(tab);
-    if (!draft) return;
-    if (tab === "docTc") {
-      setDraft({ ...draft, mode: "docTc" });
-    } else if (draft.mode === "docTc") {
-      const nextMode =
-        draft.steps.length > 0
-          ? "builder"
-          : draft.rawScript.trim() !== ""
-            ? "script"
-            : "builder";
-      setDraft({ ...draft, mode: nextMode });
-    }
   }
 
   async function handleStartRecord(): Promise<void> {
@@ -362,7 +335,6 @@ export default function App() {
         });
         setDraft(nextDraft);
         await refreshList();
-        setEditorTab("builder");
         const patch: Partial<ScenarioRunUiState> = { log: newLog };
         patch.smartTc =
           smartTcPersist.length > 0 ? smartTcPersist : null;
@@ -398,6 +370,25 @@ export default function App() {
       (draft.mode === "builder"
         ? draft.steps.length > 0
         : draft.rawScript.trim() !== ""));
+
+  function handleSendDocTcToCurrent(newSteps: Step[]): void {
+    if (!draft) return;
+    setDraft({ ...draft, steps: [...draft.steps, ...newSteps] });
+  }
+
+  async function handleCreateScenarioFromDocTc(payload: {
+    name: string;
+    steps: Step[];
+  }): Promise<void> {
+    const name = payload.name.trim() || "문서 기반 TC";
+    const created = await scenarioApi.create({
+      name,
+      mode: "builder",
+      steps: payload.steps,
+    });
+    await refreshList();
+    setDraft(created);
+  }
 
   async function startRun(): Promise<void> {
     if (!draft) return;
@@ -436,7 +427,7 @@ export default function App() {
 
   return (
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 p-6">
-      <AppHeader />
+      <AppHeader onOpenDocTc={() => setIsDocTcOpen(true)} />
 
       <div className="flex flex-1 gap-6">
         <ScenarioList
@@ -455,6 +446,7 @@ export default function App() {
               onQuickStartUrlChange={setQuickStartUrl}
               onCreateWithStartUrl={() => void handleCreateWithStartUrl()}
               onCreateEmpty={() => void handleCreate()}
+              onOpenDocTc={() => setIsDocTcOpen(true)}
             />
           ) : (
             <>
@@ -465,27 +457,14 @@ export default function App() {
                 isSaveBusy={saveBusy}
               />
 
-              <EditorModeTabs
-                editorTab={editorTab}
-                onSelectBuilder={() => switchTab("builder")}
-                onSelectDocTc={() => switchTab("docTc")}
+              <ScenarioBuilder
+                steps={draft.steps}
+                onChange={setSteps}
+                rawScript={draft.rawScript}
+                onRawScriptChange={(rawScript) =>
+                  updateDraft({ rawScript })
+                }
               />
-
-              {editorTab === "builder" ? (
-                <ScenarioBuilder
-                  steps={draft.steps}
-                  onChange={setSteps}
-                  rawScript={draft.rawScript}
-                  onRawScriptChange={(rawScript) =>
-                    updateDraft({ rawScript })
-                  }
-                />
-              ) : (
-                <DocTcPanel
-                  scenario={draft}
-                  onScenarioUpdated={(scenario) => setDraft(scenario)}
-                />
-              )}
 
               <RunPanel
                 status={activeRunUi.status}
@@ -534,6 +513,16 @@ export default function App() {
           )}
         </main>
       </div>
+
+      <DocTcModal
+        open={isDocTcOpen}
+        onClose={() => setIsDocTcOpen(false)}
+        hasActiveScenario={draft != null}
+        onSendToCurrent={handleSendDocTcToCurrent}
+        onCreateNewScenario={(payload) =>
+          void handleCreateScenarioFromDocTc(payload)
+        }
+      />
     </div>
   );
 }

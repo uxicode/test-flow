@@ -1,6 +1,5 @@
 import "./loadEnv.js";
 import cors from "@fastify/cors";
-import multipart from "@fastify/multipart";
 import staticPlugin from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
@@ -10,13 +9,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
-import {
-  convertGeneratedDocTcToExcelCases,
-  extractRequirementsFromText,
-  generateDocTestCases,
-  parseUploadedDocument,
-} from "./docTcGenerator.js";
-import type { ParsedDocumentRecord, RequirementItem } from "./docTcTypes.js";
 import type { ExcelTestCase } from "./excelTestCaseTypes.js";
 import type { Step } from "./scenarioStore.js";
 import {
@@ -47,13 +39,6 @@ import {
 import {
   parseExcelTestCasesArray,
 } from "./excelBodyValidate.js";
-import {
-  parseDocTcGenerationMeta,
-  parseGenerateDocTcOptions,
-  parseGeneratedDocTestCases,
-  parseRequirementItems,
-  parseSourceDocumentRef,
-} from "./docTcBodyValidate.js";
 import { parseSmartTcArray } from "./smartTcBodyValidate.js";
 import {
   generateMergedSpecFromTestCases,
@@ -104,7 +89,6 @@ interface RunRecord {
 
 const runs = new Map<string, RunRecord>();
 const subscribers = new Map<string, Set<(payload: string) => void>>();
-const parsedDocuments = new Map<string, ParsedDocumentRecord>();
 
 function getRunArtifactsDir(runId: string): string {
   return path.join(dataRunsRoot, runId);
@@ -372,62 +356,6 @@ async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
 }
 
-async function readSingleMultipartFile(req: any): Promise<{
-  fileBuffer: Buffer | null;
-  fileName: string;
-  mimeType: string;
-  fields: Record<string, string>;
-}> {
-  let fileBuffer: Buffer | null = null;
-  let fileName = "document.txt";
-  let mimeType = "text/plain";
-  const fields: Record<string, string> = {};
-  for await (const part of req.parts()) {
-    if (part.type === "file") {
-      if (part.fieldname === "file") {
-        fileBuffer = await part.toBuffer();
-        fileName = part.filename || fileName;
-        mimeType = part.mimetype || mimeType;
-      } else {
-        await part.toBuffer();
-      }
-      continue;
-    }
-    fields[part.fieldname] = String(part.value ?? "");
-  }
-  return { fileBuffer, fileName, mimeType, fields };
-}
-
-function sendDocParseError(reply: any, err: unknown) {
-  const message = err instanceof Error ? err.message : String(err);
-  if (message === "unsupported_document_type") {
-    return reply.code(400).send({
-      error: "unsupported_document_type",
-      message: "지원하지 않는 문서 형식입니다. MVP에서는 .txt/.md만 파싱합니다.",
-    });
-  }
-  if (message === "text_extraction_not_supported") {
-    return reply.code(400).send({
-      error: "text_extraction_not_supported",
-      message: "MVP에서는 .pdf/.docx/.hwpx 텍스트 추출을 아직 지원하지 않습니다.",
-    });
-  }
-  if (message === "empty_document") {
-    return reply.code(400).send({
-      error: "empty_document",
-      message: "문서에서 추출된 텍스트가 비어 있습니다.",
-    });
-  }
-  if (message === "garbled_document_text") {
-    return reply.code(400).send({
-      error: "garbled_document_text",
-      message:
-        "문서 텍스트 추출 결과가 깨져 있어 분석을 중단했습니다. 텍스트 기반 PDF인지 확인하거나 DOCX/HWPX 원본으로 다시 업로드해 주세요.",
-    });
-  }
-  return reply.code(400).send({ error: "document_parse_failed", message });
-}
-
 function guessContentType(filePath: string): string {
   const lower = filePath.toLowerCase();
   if (lower.endsWith(".html")) return "text/html; charset=utf-8";
@@ -644,9 +572,6 @@ async function prepareApp(): Promise<void> {
   await fs.mkdir(recordingsDir, { recursive: true });
 
   await fastify.register(cors, { origin: true });
-  await fastify.register(multipart, {
-    limits: { fileSize: MAX_UPLOAD_BYTES },
-  });
   await fastify.register(websocket);
 
   fastify.get("/health", async () => ({ ok: true }));
@@ -660,16 +585,11 @@ fastify.get("/api/scenarios", async () => {
 fastify.post("/api/scenarios", async (req, reply) => {
   const body = (req.body ?? {}) as {
     name?: string;
-    mode?: "builder" | "script" | "docTc";
+    mode?: "builder" | "script";
     steps?: Step[];
     rawScript?: string;
     excelTestCases?: unknown;
     smartTc?: unknown;
-    sourceDocument?: unknown;
-    documentText?: string;
-    requirementsExtract?: unknown;
-    generatedDocTestCases?: unknown;
-    docTcGeneration?: unknown;
   };
   let excelTestCases: ExcelTestCase[] | undefined;
   if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
@@ -693,56 +613,6 @@ fastify.post("/api/scenarios", async (req, reply) => {
     }
     smartTc = parsed;
   }
-  let sourceDocument: Parameters<typeof createScenario>[1]["sourceDocument"];
-  if (Object.prototype.hasOwnProperty.call(body, "sourceDocument")) {
-    const parsed = parseSourceDocumentRef(body.sourceDocument);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_source_document",
-        message: "sourceDocument must be a SourceDocumentRef object.",
-      });
-    }
-    sourceDocument = parsed;
-  }
-  let requirementsExtract:
-    | Parameters<typeof createScenario>[1]["requirementsExtract"]
-    | undefined;
-  if (Object.prototype.hasOwnProperty.call(body, "requirementsExtract")) {
-    const parsed = parseRequirementItems(body.requirementsExtract);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_requirements_extract",
-        message: "requirementsExtract must be an array of RequirementItem objects.",
-      });
-    }
-    requirementsExtract = parsed;
-  }
-  let generatedDocTestCases:
-    | Parameters<typeof createScenario>[1]["generatedDocTestCases"]
-    | undefined;
-  if (Object.prototype.hasOwnProperty.call(body, "generatedDocTestCases")) {
-    const parsed = parseGeneratedDocTestCases(body.generatedDocTestCases);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_generated_doc_test_cases",
-        message: "generatedDocTestCases must be an array of GeneratedDocTestCase objects.",
-      });
-    }
-    generatedDocTestCases = parsed;
-  }
-  let docTcGeneration:
-    | Parameters<typeof createScenario>[1]["docTcGeneration"]
-    | undefined;
-  if (Object.prototype.hasOwnProperty.call(body, "docTcGeneration")) {
-    const parsed = parseDocTcGenerationMeta(body.docTcGeneration);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_doc_tc_generation",
-        message: "docTcGeneration must be a DocTcGenerationMeta object.",
-      });
-    }
-    docTcGeneration = parsed;
-  }
   const scenario = await createScenario(scenariosDir, {
     name: body.name ?? "New scenario",
     mode: body.mode,
@@ -750,11 +620,6 @@ fastify.post("/api/scenarios", async (req, reply) => {
     rawScript: body.rawScript,
     excelTestCases,
     ...(smartTc !== undefined ? { smartTc } : {}),
-    ...(sourceDocument !== undefined ? { sourceDocument } : {}),
-    ...(typeof body.documentText === "string" ? { documentText: body.documentText } : {}),
-    ...(requirementsExtract !== undefined ? { requirementsExtract } : {}),
-    ...(generatedDocTestCases !== undefined ? { generatedDocTestCases } : {}),
-    ...(docTcGeneration !== undefined ? { docTcGeneration } : {}),
   });
   return reply.code(201).send(scenario);
 });
@@ -770,16 +635,11 @@ fastify.put("/api/scenarios/:id", async (req, reply) => {
   const { id } = req.params as { id: string };
   const body = (req.body ?? {}) as Partial<{
     name: string;
-    mode: "builder" | "script" | "docTc";
+    mode: "builder" | "script";
     steps: Step[];
     rawScript: string;
     excelTestCases: unknown;
     smartTc: unknown;
-    sourceDocument: unknown;
-    documentText: string;
-    requirementsExtract: unknown;
-    generatedDocTestCases: unknown;
-    docTcGeneration: unknown;
   }>;
   const patch: Parameters<typeof updateScenario>[2] = {};
   if (body.name !== undefined) patch.name = body.name;
@@ -805,47 +665,6 @@ fastify.put("/api/scenarios/:id", async (req, reply) => {
       });
     }
     patch.smartTc = parsed;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "sourceDocument")) {
-    const parsed = parseSourceDocumentRef(body.sourceDocument);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_source_document",
-        message: "sourceDocument must be a SourceDocumentRef object.",
-      });
-    }
-    patch.sourceDocument = parsed;
-  }
-  if (body.documentText !== undefined) patch.documentText = body.documentText;
-  if (Object.prototype.hasOwnProperty.call(body, "requirementsExtract")) {
-    const parsed = parseRequirementItems(body.requirementsExtract);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_requirements_extract",
-        message: "requirementsExtract must be an array of RequirementItem objects.",
-      });
-    }
-    patch.requirementsExtract = parsed;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "generatedDocTestCases")) {
-    const parsed = parseGeneratedDocTestCases(body.generatedDocTestCases);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_generated_doc_test_cases",
-        message: "generatedDocTestCases must be an array of GeneratedDocTestCase objects.",
-      });
-    }
-    patch.generatedDocTestCases = parsed;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "docTcGeneration")) {
-    const parsed = parseDocTcGenerationMeta(body.docTcGeneration);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_doc_tc_generation",
-        message: "docTcGeneration must be a DocTcGenerationMeta object.",
-      });
-    }
-    patch.docTcGeneration = parsed;
   }
   const updated = await updateScenario(scenariosDir, id, patch);
   if (!updated) return reply.code(404).send({ error: "not_found" });
@@ -884,237 +703,6 @@ fastify.post("/api/tc/convert", async (req, reply) => {
   }
   const tc = stepsToSmartTC(body.steps);
   return { totalSteps: tc.length, tc };
-});
-
-// --- Document → Requirement / TC generation ---
-
-fastify.post("/api/docs/parse", async (req, reply) => {
-  let fileBuffer: Buffer | null = null;
-  let fileName = "document.txt";
-  let mimeType = "text/plain";
-  const fields: Record<string, string> = {};
-  try {
-    const parsed = await readSingleMultipartFile(req);
-    fileBuffer = parsed.fileBuffer;
-    fileName = parsed.fileName;
-    mimeType = parsed.mimeType;
-    Object.assign(fields, parsed.fields);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return reply.code(400).send({ error: "multipart_read_failed", message });
-  }
-
-  if (!fileBuffer || fileBuffer.length === 0) {
-    return reply.code(400).send({ error: "file_required" });
-  }
-
-  try {
-    const parsed = await parseUploadedDocument({
-      fileName,
-      mimeType,
-      buffer: fileBuffer,
-      language:
-        fields.language === "ko" || fields.language === "en"
-          ? fields.language
-          : undefined,
-    });
-    parsedDocuments.set(parsed.document.id, parsed);
-    return {
-      document: parsed.document,
-      extractedText: parsed.extractedText,
-      requirements: parsed.requirements,
-      warnings: parsed.warnings,
-    };
-  } catch (err) {
-    return sendDocParseError(reply, err);
-  }
-});
-
-fastify.post("/api/docs/generate-testcases", async (req, reply) => {
-  const body = (req.body ?? {}) as {
-    documentId?: string;
-    requirements?: unknown;
-    options?: unknown;
-  };
-  const options = parseGenerateDocTcOptions(body.options);
-  if (options === null) {
-    return reply.code(400).send({
-      error: "invalid_options",
-      message: "options must be a GenerateDocTestCasesOptions object.",
-    });
-  }
-
-  let requirements: RequirementItem[] | null = null;
-  if (Array.isArray(body.requirements)) {
-    requirements = parseRequirementItems(body.requirements);
-    if (requirements === null) {
-      return reply.code(400).send({
-        error: "invalid_requirements",
-        message: "requirements must be an array of RequirementItem objects.",
-      });
-    }
-  } else if (typeof body.documentId === "string" && body.documentId.trim()) {
-    requirements = parsedDocuments.get(body.documentId)?.requirements ?? null;
-    if (!requirements) {
-      return reply.code(404).send({ error: "document_not_found" });
-    }
-  }
-
-  if (!requirements || requirements.length === 0) {
-    return reply.code(400).send({
-      error: "requirements_required",
-      message: "documentId or requirements is required.",
-    });
-  }
-
-  return await generateDocTestCases(requirements, options);
-});
-
-fastify.post("/api/docs/extract-requirements", async (req, reply) => {
-  const body = (req.body ?? {}) as { text?: string };
-  if (typeof body.text !== "string" || body.text.trim() === "") {
-    return reply.code(400).send({
-      error: "text_required",
-      message: "text is required.",
-    });
-  }
-  const result = await extractRequirementsFromText(body.text);
-  return result;
-});
-
-fastify.post("/api/scenarios/from-doc", async (req, reply) => {
-  let fileBuffer: Buffer | null = null;
-  let fileName = "document.txt";
-  let mimeType = "text/plain";
-  const fields: Record<string, string> = {};
-  try {
-    const parsed = await readSingleMultipartFile(req);
-    fileBuffer = parsed.fileBuffer;
-    fileName = parsed.fileName;
-    mimeType = parsed.mimeType;
-    Object.assign(fields, parsed.fields);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return reply.code(400).send({ error: "multipart_read_failed", message });
-  }
-
-  if (!fileBuffer || fileBuffer.length === 0) {
-    return reply.code(400).send({ error: "file_required" });
-  }
-
-  try {
-    const parsedDoc = await parseUploadedDocument({
-      fileName,
-      mimeType,
-      buffer: fileBuffer,
-      language:
-        fields.language === "ko" || fields.language === "en"
-          ? fields.language
-          : undefined,
-    });
-    parsedDocuments.set(parsedDoc.document.id, parsedDoc);
-    const generated = await generateDocTestCases(parsedDoc.requirements, {
-      includeNegative: fields.includeNegative !== "false",
-      includeBoundary: fields.includeBoundary !== "false",
-      maxCasesPerRequirement: fields.maxCasesPerRequirement
-        ? Number(fields.maxCasesPerRequirement)
-        : undefined,
-    });
-    const scenario = await createScenario(scenariosDir, {
-      name:
-        fields.name?.trim() ||
-        fileName.replace(/\.[^.]+$/, "") ||
-        "New document scenario",
-      mode: "docTc",
-      sourceDocument: parsedDoc.document,
-      requirementsExtract: parsedDoc.requirements,
-      generatedDocTestCases: generated.testCases,
-      docTcGeneration: {
-        ...generated.generation,
-        warnings: [...parsedDoc.warnings, ...generated.generation.warnings],
-      },
-      excelTestCases: convertGeneratedDocTcToExcelCases(generated.testCases),
-    });
-    return reply.code(201).send(scenario);
-  } catch (err) {
-    return sendDocParseError(reply, err);
-  }
-});
-
-fastify.post("/api/scenarios/:id/doc/generate", async (req, reply) => {
-  const { id } = req.params as { id: string };
-  const scenario = await getScenario(scenariosDir, id);
-  if (!scenario) return reply.code(404).send({ error: "not_found" });
-
-  const body = (req.body ?? {}) as {
-    requirements?: unknown;
-    options?: unknown;
-    sourceDocument?: unknown;
-  };
-  const options = parseGenerateDocTcOptions(body.options);
-  if (options === null) {
-    return reply.code(400).send({
-      error: "invalid_options",
-      message: "options must be a GenerateDocTestCasesOptions object.",
-    });
-  }
-
-  let sourceDocument = scenario.sourceDocument;
-  if (Object.prototype.hasOwnProperty.call(body, "sourceDocument")) {
-    const parsed = parseSourceDocumentRef(body.sourceDocument);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_source_document",
-        message: "sourceDocument must be a SourceDocumentRef object.",
-      });
-    }
-    sourceDocument = parsed;
-  }
-
-  let requirements: RequirementItem[] | null = null;
-  if (Object.prototype.hasOwnProperty.call(body, "requirements")) {
-    requirements = parseRequirementItems(body.requirements);
-    if (requirements === null) {
-      return reply.code(400).send({
-        error: "invalid_requirements",
-        message: "requirements must be an array of RequirementItem objects.",
-      });
-    }
-  } else {
-    requirements = scenario.requirementsExtract ?? null;
-  }
-  if (!requirements || requirements.length === 0) {
-    return reply.code(400).send({
-      error: "requirements_required",
-      message: "scenario.requirementsExtract or request requirements is required.",
-    });
-  }
-
-  const generated = await generateDocTestCases(requirements, options);
-  const updated = await updateScenario(scenariosDir, id, {
-    mode: "docTc",
-    ...(sourceDocument ? { sourceDocument } : {}),
-    requirementsExtract: requirements,
-    generatedDocTestCases: generated.testCases,
-    docTcGeneration: generated.generation,
-    excelTestCases: convertGeneratedDocTcToExcelCases(generated.testCases),
-  });
-  return updated;
-});
-
-fastify.post("/api/scenarios/:id/doc/export-excel", async (req, reply) => {
-  const { id } = req.params as { id: string };
-  const scenario = await getScenario(scenariosDir, id);
-  if (!scenario) return reply.code(404).send({ error: "not_found" });
-  const generatedDocTestCases = scenario.generatedDocTestCases ?? [];
-  if (generatedDocTestCases.length === 0) {
-    return reply.code(400).send({
-      error: "generated_doc_test_cases_required",
-      message: "generatedDocTestCases must exist on the scenario.",
-    });
-  }
-  const testCases = convertGeneratedDocTcToExcelCases(generatedDocTestCases);
-  return { testCases };
 });
 
 // --- 녹화 ---
