@@ -27,7 +27,7 @@ const iconBtnCls =
   "rounded p-1 text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-25 disabled:cursor-not-allowed transition-colors";
 
 function needsSelector(type: StepType): boolean {
-  return !["goto", "wait_ms", "screenshot"].includes(type);
+  return !["goto", "wait_ms", "screenshot", "comment"].includes(type);
 }
 
 function needsInputValue(type: StepType): boolean {
@@ -121,14 +121,14 @@ export function StepItem({
             </div>
           )}
 
-          {/* screenshot: 레이블 */}
-          {step.type === "screenshot" && (
+          {/* screenshot / comment: 레이블 */}
+          {(step.type === "screenshot" || step.type === "comment") && (
             <input
               type="text"
-              placeholder="레이블 (선택)"
+              placeholder={step.type === "comment" ? "메모 내용" : "레이블 (선택)"}
               value={step.label}
               onChange={(e) => update({ label: e.target.value })}
-              className={`${inputCls} w-44`}
+              className={`${inputCls} ${step.type === "comment" ? "min-w-[240px] flex-1" : "w-44"}`}
             />
           )}
 

@@ -165,6 +165,11 @@ export function stepsToSmartTC(steps: Step[]): SmartTC[] {
           : "현재 화면 스크린샷 캡처";
         break;
 
+      case "comment":
+        action = "wait";
+        description = step.label?.trim() || "메모";
+        break;
+
       default:
         action = "click";
         description = `${step.type} 실행`;

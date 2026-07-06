@@ -12,6 +12,7 @@ import { extractDocument } from "../services/doc-tc/extractors";
 import { extractRequirements } from "../services/doc-tc/extractRequirements";
 import { generateTestCases } from "../services/doc-tc/generateTestCases";
 import { convertTestCasesToSteps } from "../services/doc-tc/toScenarioSteps";
+import { FlowBuilderCanvas } from "./FlowBuilderCanvas";
 import {
   downloadJson,
   downloadMarkdown,
@@ -37,7 +38,7 @@ import {
 const ACCEPT_EXTENSIONS = ".pdf,.docx,.md,.hwpx,.txt";
 const HISTORY_DISPLAY_LIMIT = 20;
 
-type ModalTab = "options" | "result" | "history";
+type ModalTab = "options" | "flowbuilder" | "result" | "history";
 
 interface DocTcModalProps {
   open: boolean;
@@ -83,6 +84,7 @@ export function DocTcModal({
   onCreateNewScenario,
 }: DocTcModalProps) {
   const [file, setFile] = useState<File | null>(null);
+  const [flowBuilderTestCases, setFlowBuilderTestCases] = useState<GeneratedDocTestCase[]>([]);
   const [options, setOptions] = useState<DocTcOptions>(DEFAULT_DOC_TC_OPTIONS);
   const [progress, setProgress] = useState<DocTcProgress | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -241,7 +243,7 @@ export function DocTcModal({
       role="dialog"
       aria-modal="true"
     >
-      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
+      <div className={`flex max-h-[90vh] w-full ${tab === "flowbuilder" ? "max-w-5xl" : "max-w-3xl"} flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl transition-all duration-300`}>
         <header className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
           <div>
             <h2 className="text-base font-semibold text-slate-100">
@@ -273,6 +275,17 @@ export function DocTcModal({
             }`}
           >
             업로드 / 옵션
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("flowbuilder")}
+            className={`rounded-md px-3 py-1.5 ${
+              tab === "flowbuilder"
+                ? "bg-sky-600 text-white"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            플로우 빌더로 만들기
           </button>
           <button
             type="button"
@@ -308,6 +321,45 @@ export function DocTcModal({
               onDelete={handleDeleteHistory}
               onClearAll={handleClearHistory}
             />
+          ) : tab === "flowbuilder" ? (
+            <div className="flex flex-col gap-4">
+              <FlowBuilderCanvas onTestCasesGenerated={setFlowBuilderTestCases} />
+              <div className="flex items-center justify-end gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const resultPayload: DocTcResult = {
+                      document: {
+                        id: "flow-doc",
+                        fileName: "비주얼_플로우_기반.md",
+                        mimeType: "text/markdown",
+                        type: "md",
+                        size: 0,
+                        uploadedAt: new Date().toISOString(),
+                        textExtracted: true,
+                      },
+                      text: "",
+                      requirements: [],
+                      testCases: flowBuilderTestCases,
+                      warnings: [],
+                    };
+                    setResult(resultPayload);
+                    setTab("result");
+                  }}
+                  disabled={flowBuilderTestCases.length === 0}
+                  className="rounded-md bg-sky-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  TC 시나리오 생성 ({flowBuilderTestCases.length}개)
+                </button>
+              </div>
+            </div>
           ) : tab === "options" ? (
             <form className="flex flex-col gap-5" onSubmit={handleSubmit}>
               <label

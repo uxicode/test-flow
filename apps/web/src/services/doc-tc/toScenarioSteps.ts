@@ -3,8 +3,7 @@ import type { GeneratedDocTestCase } from "./types";
 
 function buildCommentStep(label: string): Step {
   return {
-    ...createStep("wait_ms"),
-    waitMs: 0,
+    ...createStep("comment"),
     label,
   };
 }
@@ -14,6 +13,7 @@ function buildAssertStep(expectedText: string): Step {
     ...createStep("assert_text"),
     selectorStrategy: "text",
     selectorValue: expectedText,
+    inputValue: expectedText,
     label: `기대 결과: ${expectedText}`,
   };
 }
