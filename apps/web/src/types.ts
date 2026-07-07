@@ -9,7 +9,6 @@ export const STEP_TYPES = [
   "wait_ms",
   "wait_for_selector",
   "screenshot",
-  "comment",
 ] as const;
 
 export type StepType = (typeof STEP_TYPES)[number];
@@ -63,7 +62,6 @@ export const STEP_LABELS: Record<StepType, string> = {
   wait_ms: "대기 (ms)",
   wait_for_selector: "요소 대기",
   screenshot: "스크린샷",
-  comment: "메모",
 };
 
 export const STEP_COLORS: Record<StepType, string> = {
@@ -77,7 +75,6 @@ export const STEP_COLORS: Record<StepType, string> = {
   wait_ms: "bg-slate-700/60 text-slate-300",
   wait_for_selector: "bg-slate-700/60 text-slate-300",
   screenshot: "bg-pink-900/60 text-pink-200",
-  comment: "bg-slate-800/80 text-slate-400",
 };
 
 export const SELECTOR_LABELS: Record<SelectorStrategy, string> = {
@@ -125,7 +122,7 @@ export function normalizeStepFromApi(raw: Record<string, unknown>): Step {
       : base.selectorStrategy;
   const roleRaw = typeof raw.role === "string" ? raw.role : "button";
   const role = isAriaRole(roleRaw) ? roleRaw : "button";
-  const step: Step = {
+  return {
     ...base,
     id: typeof raw.id === "string" ? raw.id : base.id,
     type,
@@ -136,22 +133,6 @@ export function normalizeStepFromApi(raw: Record<string, unknown>): Step {
     waitMs: typeof raw.waitMs === "number" ? raw.waitMs : base.waitMs,
     label: typeof raw.label === "string" ? raw.label : "",
   };
-
-  if (step.type === "wait_ms" && step.waitMs === 0 && step.label.trim()) {
-    return { ...step, type: "comment" };
-  }
-
-  return step;
-}
-
-/** 문서 TC 변환 등에서 wait_ms(0)+label로 저장된 구형 메모 스텝을 comment로 복원 */
-export function migrateLegacyCommentSteps(steps: Step[]): Step[] {
-  return steps.map((step) => {
-    if (step.type === "wait_ms" && step.waitMs === 0 && step.label.trim()) {
-      return { ...step, type: "comment" };
-    }
-    return step;
-  });
 }
 
 export const EXAMPLE_SCENARIO: Step[] = [

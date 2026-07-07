@@ -49,7 +49,6 @@ export function stepToLine(step: Step): string {
     case "assert_text":
       return `await expect.soft(${sel}).toHaveText(${JSON.stringify(step.inputValue ?? "")});`;
     case "wait_ms":
-      if ((step.waitMs ?? 1000) <= 0) return "";
       return `await page.waitForTimeout(${step.waitMs ?? 1000});`;
     case "wait_for_selector":
       return `await ${sel}.waitFor({ state: "visible" });`;
@@ -57,8 +56,6 @@ export function stepToLine(step: Step): string {
       const label = step.label ? `${step.label}-` : "";
       return `await page.screenshot({ path: "/artifacts/test-results/${label}${step.id}.png", fullPage: true });`;
     }
-    case "comment":
-      return step.label?.trim() ? `// ${step.label.trim()}` : "";
     default:
       return "";
   }

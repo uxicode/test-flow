@@ -23,7 +23,6 @@ import { ScenarioApi } from "./services/scenario-api";
 import { SmartTcFromStepsService } from "./services/smart-tc-from-steps";
 import {
   createStep,
-  migrateLegacyCommentSteps,
   normalizeStepFromApi,
   type Scenario,
   type ScenarioSummary,
@@ -182,7 +181,6 @@ export default function App() {
     }
     setDraft({
       ...s,
-      steps: migrateLegacyCommentSteps(s.steps),
       excelTestCases: s.excelTestCases ?? [],
       smartTc: smartTcOut,
     });
@@ -260,7 +258,7 @@ export default function App() {
 
   function setSteps(steps: Step[]): void {
     if (!draft) return;
-    setDraft({ ...draft, steps: migrateLegacyCommentSteps(steps) });
+    setDraft({ ...draft, steps });
   }
 
   async function handleStartRecord(): Promise<void> {
@@ -375,10 +373,7 @@ export default function App() {
 
   function handleSendDocTcToCurrent(newSteps: Step[]): void {
     if (!draft) return;
-    setDraft({
-      ...draft,
-      steps: [...draft.steps, ...migrateLegacyCommentSteps(newSteps)],
-    });
+    setDraft({ ...draft, steps: [...draft.steps, ...newSteps] });
   }
 
   async function handleCreateScenarioFromDocTc(payload: {
@@ -389,7 +384,7 @@ export default function App() {
     const created = await scenarioApi.create({
       name,
       mode: "builder",
-      steps: migrateLegacyCommentSteps(payload.steps),
+      steps: payload.steps,
     });
     await refreshList();
     setDraft(created);

@@ -14,8 +14,7 @@ export type StepType =
   | "assert_text"
   | "wait_ms"
   | "wait_for_selector"
-  | "screenshot"
-  | "comment";
+  | "screenshot";
 
 export type SelectorStrategy =
   | "text"

@@ -59,7 +59,6 @@ export function generateSpec(steps: Step[]): string {
         );
         break;
       case "wait_ms":
-        if ((step.waitMs ?? 1000) <= 0) break;
         lines.push(`  await page.waitForTimeout(${step.waitMs ?? 1000});`);
         break;
       case "wait_for_selector":
@@ -72,11 +71,6 @@ export function generateSpec(steps: Step[]): string {
         );
         break;
       }
-      case "comment":
-        if (step.label?.trim()) {
-          lines.push(`  // ${step.label.trim()}`);
-        }
-        break;
     }
   }
 
