@@ -9,6 +9,8 @@ import {
   MousePointer,
   Move,
   ArrowRight,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { analyzeFlowToTestCases, generateMermaidFromFlow, type CustomNode, type CustomEdge } from "../services/doc-tc/flowGraphAnalyzer";
 import type { GeneratedDocTestCase } from "../services/doc-tc/types";
@@ -42,6 +44,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   const [edges, setEdges] = useState<CustomEdge[]>(initialEdges);
 
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
 
@@ -69,6 +72,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   const panRef = useRef({ x: 0, y: 0 });
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const panStartRef = useRef({ x: 0, y: 0 });
+  const zoomRef = useRef(1);
 
   // Strictly sync refs to reflect state mutations
   useEffect(() => { draggingNodeIdRef.current = draggingNodeId; }, [draggingNodeId]);
@@ -77,6 +81,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   useEffect(() => { panRef.current = pan; }, [pan]);
   useEffect(() => { dragOffsetRef.current = dragOffset; }, [dragOffset]);
   useEffect(() => { panStartRef.current = panStart; }, [panStart]);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
   // Global mousemove and mouseup events registered once to guarantee closure validity
   useEffect(() => {
@@ -90,8 +95,8 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
           y: e.clientY - panStartRef.current.y,
         });
       } else if (draggingNodeIdRef.current) {
-        const rawX = e.clientX - rect.left - panRef.current.x - dragOffsetRef.current.x;
-        const rawY = e.clientY - rect.top - panRef.current.y - dragOffsetRef.current.y;
+        const rawX = (e.clientX - rect.left - panRef.current.x) / zoomRef.current - dragOffsetRef.current.x;
+        const rawY = (e.clientY - rect.top - panRef.current.y) / zoomRef.current - dragOffsetRef.current.y;
         
         const snapX = Math.round(rawX / 10) * 10;
         const snapY = Math.round(rawY / 10) * 10;
@@ -101,8 +106,8 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
         );
       } else if (drawingSourceIdRef.current) {
         setMousePos({
-          x: e.clientX - rect.left - panRef.current.x,
-          y: e.clientY - rect.top - panRef.current.y,
+          x: (e.clientX - rect.left - panRef.current.x) / zoomRef.current,
+          y: (e.clientY - rect.top - panRef.current.y) / zoomRef.current,
         });
       }
     };
@@ -163,8 +168,8 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
     if (canvasRef.current) {
       const rect = canvasRef.current.getBoundingClientRect();
       const newOffset = {
-        x: e.clientX - rect.left - pan.x - node.x,
-        y: e.clientY - rect.top - pan.y - node.y,
+        x: (e.clientX - rect.left - pan.x) / zoom - node.x,
+        y: (e.clientY - rect.top - pan.y) / zoom - node.y,
       };
 
       // Set refs immediately to allow immediate mousemove reaction
@@ -217,8 +222,8 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
     const id = (nodes.reduce((max, n) => Math.max(max, parseInt(n.id) || 0), 0) + 1).toString();
     const label = type === "input" ? "시작 단계" : type === "output" ? "종료/기대결과" : "새로운 단계";
     
-    const viewCenterX = -pan.x + 180;
-    const viewCenterY = -pan.y + 200;
+    const viewCenterX = (-pan.x + 180) / zoom;
+    const viewCenterY = (-pan.y + 200) / zoom;
 
     const newNode: CustomNode = {
       id,
@@ -265,6 +270,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
       setNodes(initialNodes);
       setEdges(initialEdges);
       setPan({ x: 0, y: 0 });
+      setZoom(1.0);
       setSelectedNodeId(null);
       setSelectedEdgeId(null);
     }
@@ -278,6 +284,27 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
       setSelectedEdgeId(null);
     }
   };
+
+  // Mouse wheel zoom support
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Prevents standard page scrolling when scrolling the canvas
+      e.preventDefault();
+      const zoomFactor = 0.05;
+      setZoom((z) => {
+        const nextZoom = z - e.deltaY * zoomFactor * 0.01;
+        return Math.max(0.5, Math.min(nextZoom, 2.0));
+      });
+    };
+
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener("wheel", handleWheel);
+    };
+  }, []);
 
   const generatedTestCases = useMemo(() => {
     return analyzeFlowToTestCases(nodes, edges);
@@ -363,7 +390,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
           <div
             className="absolute inset-0 origin-top-left pointer-events-none"
             style={{
-              transform: `translate(${pan.x}px, ${pan.y}px)`,
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             }}
           >
             <svg
@@ -546,6 +573,37 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                 </button>
               );
             })}
+          </div>
+
+          {/* Zoom Controls Overlay (Bottom-Left) */}
+          <div className="absolute bottom-4 left-4 z-30 flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/80 p-1.5 backdrop-blur-sm select-none pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.min(z + 0.1, 2.0))}
+              className="flex h-7 w-7 items-center justify-center rounded text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition"
+              title="확대 (Zoom In)"
+            >
+              <ZoomIn size={14} />
+            </button>
+            <span className="min-w-[44px] text-center text-[11px] font-semibold text-slate-300">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.max(z - 0.1, 0.5))}
+              className="flex h-7 w-7 items-center justify-center rounded text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition"
+              title="축소 (Zoom Out)"
+            >
+              <ZoomOut size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1.0)}
+              className="flex h-7 w-7 items-center justify-center rounded text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition"
+              title="원래 비율 (Reset)"
+            >
+              <RotateCcw size={12} />
+            </button>
           </div>
         </div>
 

@@ -44,6 +44,8 @@ interface Props {
   } | null;
   smartTc: SmartTC[] | null;
   scenarioName: string;
+  onSyncSmartTc?: () => void;
+  isSyncingSmartTc?: boolean;
 }
 
 export function RunPanel({
@@ -64,6 +66,8 @@ export function RunPanel({
   lastRecording,
   smartTc,
   scenarioName,
+  onSyncSmartTc,
+  isSyncingSmartTc = false,
 }: Props) {
   const isRunning = status === "running" || isStarting;
   const shots = summary?.artifacts?.screenshotUrls ?? [];
@@ -216,61 +220,106 @@ export function RunPanel({
             </div>
           ) : null}
 
-          {smartTc && smartTc.length > 0 ? (
+          {smartTc ? (
             <div className="flex flex-col gap-2 border-t border-slate-800/80 pt-3">
-              <button
-                type="button"
-                onClick={() => setIsSmartTcOpen((open) => !open)}
-                aria-expanded={isSmartTcOpen}
-                className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-700/80 bg-slate-900/50 px-3 py-2 text-left transition-colors hover:border-slate-600 hover:bg-slate-800/40"
-              >
-                <span className="text-xs font-medium text-emerald-300/90">
-                  스마트 TC ({smartTc.length}개)
-                  <span className="ml-2 font-normal text-slate-500">
-                    {isSmartTcOpen ? "접기" : "펼치기"}
-                  </span>
-                </span>
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                  className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isSmartTcOpen ? "rotate-180" : ""}`}
-                  aria-hidden
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsSmartTcOpen((open) => !open)}
+                  aria-expanded={isSmartTcOpen}
+                  className="flex flex-1 items-center justify-between gap-3 rounded-lg border border-slate-700/80 bg-slate-900/50 px-3 py-2 text-left transition-colors hover:border-slate-600 hover:bg-slate-800/40"
                 >
-                  <path
-                    fillRule="evenodd"
-                    d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.938a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </button>
+                  <span className="text-xs font-medium text-emerald-300/90">
+                    스마트 TC ({smartTc.length}개)
+                    <span className="ml-2 font-normal text-slate-500">
+                      {isSmartTcOpen ? "접기" : "펼치기"}
+                    </span>
+                  </span>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isSmartTcOpen ? "rotate-180" : ""}`}
+                    aria-hidden
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.938a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+                {onSyncSmartTc && (
+                  <button
+                    type="button"
+                    onClick={onSyncSmartTc}
+                    disabled={isSyncingSmartTc}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700/80 bg-slate-900/50 text-slate-400 hover:border-slate-600 hover:text-emerald-300 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="현재 빌더 스텝 기준으로 스마트 TC 업데이트"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      className={`h-4 w-4 ${isSyncingSmartTc ? "animate-spin text-emerald-300" : ""}`}
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.012-.01a.75.75 0 0 0-1.17 1.011l.012.01a7 7 0 0 0 11.716-3.147.75.75 0 0 0-1.355-.34Z"
+                      />
+                      <path
+                        fillRule="evenodd"
+                        d="M17.75 8.25a.75.75 0 0 0-.75-.75h-3.25a.75.75 0 0 0-.75.75v3.25a.75.75 0 0 0 1.5 0V9.81l2.062 2.062a.75.75 0 1 0 1.06-1.06L15.56 8.75h1.44a.75.75 0 0 0 .75-.75Z"
+                      />
+                      <path
+                        fillRule="evenodd"
+                        d="M4.688 8.576a5.5 5.5 0 0 1 9.201-2.466l.012.01a.75.75 0 0 0 1.17-1.011l-.012-.01a7 7 0 0 0-11.716 3.147.75.75 0 0 0 1.355.34Z"
+                      />
+                      <path
+                        fillRule="evenodd"
+                        d="M2.25 11.75a.75.75 0 0 0 .75.75h3.25a.75.75 0 0 0 .75-.75V8.5a.75.75 0 0 0-1.5 0v1.44L3.438 7.878a.75.75 0 0 0-1.06 1.06l2.06 2.062H3a.75.75 0 0 0-.75.75Z"
+                      />
+                    </svg>
+                  </button>
+                )}
+              </div>
               {isSmartTcOpen ? (
                 <div className="flex flex-col gap-2 rounded-lg border border-slate-800/90 bg-slate-950/30 p-3">
-                  <div className="flex flex-wrap justify-end">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const base = scenarioName.trim() || "smart-tc";
-                        downloadSmartTcExcel(smartTc, {
-                          policyId: "SMART-TC",
-                          sheetName: "Sheet1",
-                          fileName: `${base}-smartTc`,
-                        });
-                      }}
-                      className="rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-900/50"
-                    >
-                      엑셀(.xlsx) 다운로드
-                    </button>
-                  </div>
-                  <SmartTcTable items={smartTc} />
-                  <details className="text-xs text-slate-500">
-                    <summary className="cursor-pointer select-none hover:text-slate-400">
-                      smartTc.json 원문 보기
-                    </summary>
-                    <pre className="mt-2 max-h-64 overflow-auto rounded-lg border border-slate-800 bg-slate-900/60 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-                      {JSON.stringify(smartTc, null, 2)}
-                    </pre>
-                  </details>
+                  {smartTc.length > 0 ? (
+                    <>
+                      <div className="flex flex-wrap justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const base = scenarioName.trim() || "smart-tc";
+                            downloadSmartTcExcel(smartTc, {
+                              policyId: "SMART-TC",
+                              sheetName: "Sheet1",
+                              fileName: `${base}-smartTc`,
+                            });
+                          }}
+                          className="rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-900/50"
+                        >
+                          엑셀(.xlsx) 다운로드
+                        </button>
+                      </div>
+                      <SmartTcTable items={smartTc} />
+                    </>
+                  ) : (
+                    <div className="py-6 text-center text-xs text-slate-500">
+                      등록된 스마트 TC가 없습니다. 오른쪽 상단의 업데이트 아이콘 버튼을 눌러 빌더 스텝과 동기화하세요.
+                    </div>
+                  )}
+                  {smartTc.length > 0 && (
+                    <details className="text-xs text-slate-500">
+                      <summary className="cursor-pointer select-none hover:text-slate-400">
+                        smartTc.json 원문 보기
+                      </summary>
+                      <pre className="mt-2 max-h-64 overflow-auto rounded-lg border border-slate-800 bg-slate-900/60 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
+                        {JSON.stringify(smartTc, null, 2)}
+                      </pre>
+                    </details>
+                  )}
                 </div>
               ) : null}
             </div>

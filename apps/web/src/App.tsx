@@ -28,6 +28,7 @@ import {
   type ScenarioSummary,
   type Step,
 } from "./types";
+import { generatePlaywrightScript } from "./utils/playwright-compiler";
 
 const scenarioApi = new ScenarioApi();
 const smartTcService = new SmartTcFromStepsService();
@@ -36,6 +37,7 @@ export default function App() {
   const [list, setList] = useState<ScenarioSummary[]>([]);
   const [draft, setDraft] = useState<Scenario | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
+  const [isSyncingSmartTc, setIsSyncingSmartTc] = useState(false);
 
   const [runUiByScenario, setRunUiByScenario] = useState<
     Record<string, ScenarioRunUiState>
@@ -154,10 +156,12 @@ export default function App() {
     const steps =
       url.length > 0 ? [{ ...createStep("goto"), selectorValue: url }] : [];
     const name = url.length > 0 ? scenarioNameFromUrl(url) : "새 시나리오";
+    const rawScript = generatePlaywrightScript(steps);
     const created = await scenarioApi.create({
       name,
       mode: "builder",
       ...(steps.length > 0 ? { steps } : {}),
+      rawScript,
     });
     await refreshList();
     setDraft(created);
@@ -258,7 +262,27 @@ export default function App() {
 
   function setSteps(steps: Step[]): void {
     if (!draft) return;
-    setDraft({ ...draft, steps });
+    const rawScript = generatePlaywrightScript(steps);
+    setDraft({ ...draft, steps, rawScript });
+  }
+
+  async function handleSyncSmartTc(): Promise<void> {
+    if (!draft) return;
+    setIsSyncingSmartTc(true);
+    try {
+      const derived = await smartTcService.convert(draft.steps);
+      if (derived && derived.length > 0) {
+        setDraft((prev) => (prev ? { ...prev, smartTc: derived } : prev));
+        await scenarioApi.update(draft.id, { smartTc: derived });
+        patchRunUi(draft.id, { smartTc: derived });
+      } else {
+        alert("스마트 TC 변환 결과가 없거나 실패했습니다.");
+      }
+    } catch (e) {
+      alert(`스마트 TC 업데이트 중 오류가 발생했습니다: ${(e as Error).message}`);
+    } finally {
+      setIsSyncingSmartTc(false);
+    }
   }
 
   async function handleStartRecord(): Promise<void> {
@@ -373,7 +397,9 @@ export default function App() {
 
   function handleSendDocTcToCurrent(newSteps: Step[]): void {
     if (!draft) return;
-    setDraft({ ...draft, steps: [...draft.steps, ...newSteps] });
+    const steps = [...draft.steps, ...newSteps];
+    const rawScript = generatePlaywrightScript(steps);
+    setDraft({ ...draft, steps, rawScript });
   }
 
   async function handleCreateScenarioFromDocTc(payload: {
@@ -381,10 +407,12 @@ export default function App() {
     steps: Step[];
   }): Promise<void> {
     const name = payload.name.trim() || "문서 기반 TC";
+    const rawScript = generatePlaywrightScript(payload.steps);
     const created = await scenarioApi.create({
       name,
       mode: "builder",
       steps: payload.steps,
+      rawScript,
     });
     await refreshList();
     setDraft(created);
@@ -490,9 +518,11 @@ export default function App() {
                 smartTc={
                   draft.smartTc && draft.smartTc.length > 0
                     ? draft.smartTc
-                    : activeRunUi.smartTc
+                    : (activeRunUi.smartTc ?? [])
                 }
                 scenarioName={draft.name}
+                onSyncSmartTc={() => void handleSyncSmartTc()}
+                isSyncingSmartTc={isSyncingSmartTc}
               />
               <RunHistoryPanel
                 scenarioId={draft.id}

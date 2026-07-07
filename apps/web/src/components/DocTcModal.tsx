@@ -351,6 +351,15 @@ export function DocTcModal({
                       warnings: [],
                     };
                     setResult(resultPayload);
+                    const saved = saveDocTcHistory(resultPayload, options);
+                    if (saved) {
+                      setHistory((prev) =>
+                        [saved, ...prev.filter((e) => e.id !== saved.id)].slice(
+                          0,
+                          HISTORY_DISPLAY_LIMIT,
+                        ),
+                      );
+                    }
                     setTab("result");
                   }}
                   disabled={flowBuilderTestCases.length === 0}
