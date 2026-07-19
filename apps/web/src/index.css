@@ -26,21 +26,29 @@
   }
 
   body::before {
-    top: -10%;
+    /* top: -10%;
     right: -5%;
     width: 45vw;
     height: 45vw;
     background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, rgba(139, 92, 246, 0) 70%);
-    animation: float-slow 25s ease-in-out infinite alternate;
+    animation: float-slow 25s ease-in-out infinite alternate; */
+    content: "";
+    z-index: -2;
+    pointer-events: none;
+    background-color: var(--glass-bg-deep);
+    background-image: radial-gradient(62% 52% at 18% 88%, #2a0d55f2 0%, #0000 58%), radial-gradient(58% 48% at 52% 62%, #75007fe0 0%, #0000 56%), radial-gradient(54% 46% at 78% 28%, #e28bf89e 0%, #0000 54%), radial-gradient(48% 42% at 88% 78%, #aa1b5bb8 0%, #0000 52%), radial-gradient(40% 36% at 32% 18%, #54173573 0%, #0000 50%), linear-gradient(145deg, #0f0520 0%, #2e1065 22%, #6b21a8 42%, #a21caf 58%, #db2777 76%, #fbcfe8 100%);
+    background-attachment: fixed;
+    position: fixed;
+    inset: 0;
   }
 
   body::after {
-    bottom: -15%;
+    /* bottom: -15%;
     left: -5%;
     width: 50vw;
     height: 50vw;
     background: radial-gradient(circle, rgba(14, 165, 233, 0.15) 0%, rgba(14, 165, 233, 0) 70%);
-    animation: float-slow-reverse 30s ease-in-out infinite alternate;
+    animation: float-slow-reverse 30s ease-in-out infinite alternate; */
   }
 
   @keyframes float-slow {

@@ -22,6 +22,39 @@ interface FlowBuilderCanvasProps {
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 50;
 
+const getClosestPorts = (sourceNode: CustomNode, targetNode: CustomNode) => {
+  const sourcePorts = [
+    { x: sourceNode.x + NODE_WIDTH / 2, y: sourceNode.y, dir: "top" },
+    { x: sourceNode.x + NODE_WIDTH / 2, y: sourceNode.y + NODE_HEIGHT, dir: "bottom" },
+    { x: sourceNode.x, y: sourceNode.y + NODE_HEIGHT / 2, dir: "left" },
+    { x: sourceNode.x + NODE_WIDTH, y: sourceNode.y + NODE_HEIGHT / 2, dir: "right" },
+  ];
+
+  const targetPorts = [
+    { x: targetNode.x + NODE_WIDTH / 2, y: targetNode.y, dir: "top" },
+    { x: targetNode.x + NODE_WIDTH / 2, y: targetNode.y + NODE_HEIGHT, dir: "bottom" },
+    { x: targetNode.x, y: targetNode.y + NODE_HEIGHT / 2, dir: "left" },
+    { x: targetNode.x + NODE_WIDTH, y: targetNode.y + NODE_HEIGHT / 2, dir: "right" },
+  ];
+
+  let minDistance = Infinity;
+  let bestSource = sourcePorts[1]; // default bottom
+  let bestTarget = targetPorts[0]; // default top
+
+  for (const sp of sourcePorts) {
+    for (const tp of targetPorts) {
+      const dist = Math.hypot(tp.x - sp.x, tp.y - sp.y);
+      if (dist < minDistance) {
+        minDistance = dist;
+        bestSource = sp;
+        bestTarget = tp;
+      }
+    }
+  }
+
+  return { source: bestSource, target: bestTarget };
+};
+
 const initialNodes: CustomNode[] = [
   { id: "1", type: "input", label: "로그인 화면 진입", x: 250, y: 30 },
   { id: "2", type: "default", label: "이메일 및 비밀번호 입력", x: 250, y: 130 },
@@ -52,6 +85,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
   const [drawingSourceId, setDrawingSourceId] = useState<string | null>(null);
+  const [drawingSourceDir, setDrawingSourceDir] = useState<"top" | "bottom" | "left" | "right" | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -69,6 +103,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   const draggingNodeIdRef = useRef<string | null>(null);
   const isPanningRef = useRef(false);
   const drawingSourceIdRef = useRef<string | null>(null);
+  const drawingSourceDirRef = useRef<"top" | "bottom" | "left" | "right" | null>(null);
   const panRef = useRef({ x: 0, y: 0 });
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const panStartRef = useRef({ x: 0, y: 0 });
@@ -78,6 +113,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   useEffect(() => { draggingNodeIdRef.current = draggingNodeId; }, [draggingNodeId]);
   useEffect(() => { isPanningRef.current = isPanning; }, [isPanning]);
   useEffect(() => { drawingSourceIdRef.current = drawingSourceId; }, [drawingSourceId]);
+  useEffect(() => { drawingSourceDirRef.current = drawingSourceDir; }, [drawingSourceDir]);
   useEffect(() => { panRef.current = pan; }, [pan]);
   useEffect(() => { dragOffsetRef.current = dragOffset; }, [dragOffset]);
   useEffect(() => { panStartRef.current = panStart; }, [panStart]);
@@ -117,10 +153,12 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
       isPanningRef.current = false;
       draggingNodeIdRef.current = null;
       drawingSourceIdRef.current = null;
+      drawingSourceDirRef.current = null;
 
       setIsPanning(false);
       setDraggingNodeId(null);
       setDrawingSourceId(null);
+      setDrawingSourceDir(null);
     };
 
     window.addEventListener("mousemove", handleGlobalMouseMove);
@@ -181,21 +219,24 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
     }
   };
 
-  const handlePortMouseDown = (e: React.MouseEvent, nodeId: string) => {
+  const handlePortMouseDown = (e: React.MouseEvent, nodeId: string, dir: "top" | "bottom" | "left" | "right") => {
     e.stopPropagation();
     e.preventDefault();
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return;
 
-    const center = getNodeCenter(node);
-    const startPos = {
-      x: center.x + NODE_WIDTH / 2,
-      y: center.y,
-    };
+    let sx = node.x + NODE_WIDTH / 2;
+    let sy = node.y + NODE_HEIGHT / 2;
+    if (dir === "top") { sx = node.x + NODE_WIDTH / 2; sy = node.y; }
+    else if (dir === "bottom") { sx = node.x + NODE_WIDTH / 2; sy = node.y + NODE_HEIGHT; }
+    else if (dir === "left") { sx = node.x; sy = node.y + NODE_HEIGHT / 2; }
+    else if (dir === "right") { sx = node.x + NODE_WIDTH; sy = node.y + NODE_HEIGHT / 2; }
 
     drawingSourceIdRef.current = nodeId;
+    drawingSourceDirRef.current = dir;
     setDrawingSourceId(nodeId);
-    setMousePos(startPos);
+    setDrawingSourceDir(dir);
+    setMousePos({ x: sx, y: sy });
   };
 
   const handleNodeMouseUp = (e: React.MouseEvent, targetId: string) => {
@@ -318,10 +359,32 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
     return generateMermaidFromFlow(nodes, edges);
   }, [nodes, edges]);
 
-  const drawBezierPath = (sx: number, sy: number, tx: number, ty: number) => {
-    const dx = tx - sx;
-    const ctrlOffset = Math.max(Math.abs(dx) * 0.5, 40);
-    return `M ${sx} ${sy} C ${sx + ctrlOffset} ${sy}, ${tx - ctrlOffset} ${ty}, ${tx} ${ty}`;
+  const drawBezierPath = (
+    sx: number,
+    sy: number,
+    sDir: "top" | "bottom" | "left" | "right" | string,
+    tx: number,
+    ty: number,
+    tDir: "top" | "bottom" | "left" | "right" | string
+  ) => {
+    let scx = sx;
+    let scy = sy;
+    let tcx = tx;
+    let tcy = ty;
+    
+    const offset = 45;
+    
+    if (sDir === "right") scx += offset;
+    else if (sDir === "left") scx -= offset;
+    else if (sDir === "bottom") scy += offset;
+    else if (sDir === "top") scy -= offset;
+    
+    if (tDir === "right") tcx += offset;
+    else if (tDir === "left") tcx -= offset;
+    else if (tDir === "bottom") tcy += offset;
+    else if (tDir === "top") tcy -= offset;
+    
+    return `M ${sx} ${sy} C ${scx} ${scy}, ${tcx} ${tcy}, ${tx} ${ty}`;
   };
 
   return (
@@ -428,12 +491,8 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                 const targetNode = nodes.find((n) => n.id === edge.target);
                 if (!sourceNode || !targetNode) return null;
 
-                const sx = sourceNode.x + NODE_WIDTH;
-                const sy = sourceNode.y + NODE_HEIGHT / 2;
-                const tx = targetNode.x;
-                const ty = targetNode.y + NODE_HEIGHT / 2;
-
-                const pathString = drawBezierPath(sx, sy, tx, ty);
+                const { source: sp, target: tp } = getClosestPorts(sourceNode, targetNode);
+                const pathString = drawBezierPath(sp.x, sp.y, sp.dir, tp.x, tp.y, tp.dir);
                 const isSelected = selectedEdgeId === edge.id;
 
                 return (
@@ -462,14 +521,26 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                 );
               })}
 
-              {drawingSourceId && (() => {
+              {drawingSourceId && drawingSourceDir && (() => {
                 const srcNode = nodes.find((n) => n.id === drawingSourceId);
                 if (!srcNode) return null;
-                const sx = srcNode.x + NODE_WIDTH;
-                const sy = srcNode.y + NODE_HEIGHT / 2;
+
+                let sx = srcNode.x + NODE_WIDTH / 2;
+                let sy = srcNode.y + NODE_HEIGHT / 2;
+                if (drawingSourceDir === "top") { sx = srcNode.x + NODE_WIDTH / 2; sy = srcNode.y; }
+                else if (drawingSourceDir === "bottom") { sx = srcNode.x + NODE_WIDTH / 2; sy = srcNode.y + NODE_HEIGHT; }
+                else if (drawingSourceDir === "left") { sx = srcNode.x; sy = srcNode.y + NODE_HEIGHT / 2; }
+                else if (drawingSourceDir === "right") { sx = srcNode.x + NODE_WIDTH; sy = srcNode.y + NODE_HEIGHT / 2; }
+
+                let tDir = "top";
+                if (drawingSourceDir === "top") tDir = "bottom";
+                else if (drawingSourceDir === "bottom") tDir = "top";
+                else if (drawingSourceDir === "left") tDir = "right";
+                else if (drawingSourceDir === "right") tDir = "left";
+
                 return (
                   <path
-                    d={drawBezierPath(sx, sy, mousePos.x, mousePos.y)}
+                    d={drawBezierPath(sx, sy, drawingSourceDir, mousePos.x, mousePos.y, tDir)}
                     fill="none"
                     stroke="#f59e0b"
                     strokeWidth={2}
@@ -524,11 +595,32 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                   </div>
 
                   {node.type !== "output" && (
-                    <div
-                      onMouseDown={(e) => handlePortMouseDown(e, node.id)}
-                      className="absolute top-1/2 -right-1.5 h-3.5 w-3.5 -translate-y-1/2 rounded-full border-2 border-slate-700 bg-sky-500 hover:bg-sky-400 hover:scale-125 cursor-crosshair z-20 transition"
-                      title="화살표 그리기"
-                    />
+                    <>
+                      {/* Top Port */}
+                      <div
+                        onMouseDown={(e) => handlePortMouseDown(e, node.id, "top")}
+                        className="absolute -top-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rounded-full border-2 border-slate-700 bg-sky-500 hover:bg-sky-400 hover:scale-125 cursor-crosshair z-20 transition"
+                        title="위로 화살표 그리기"
+                      />
+                      {/* Bottom Port */}
+                      <div
+                        onMouseDown={(e) => handlePortMouseDown(e, node.id, "bottom")}
+                        className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rounded-full border-2 border-slate-700 bg-sky-500 hover:bg-sky-400 hover:scale-125 cursor-crosshair z-20 transition"
+                        title="아래로 화살표 그리기"
+                      />
+                      {/* Left Port */}
+                      <div
+                        onMouseDown={(e) => handlePortMouseDown(e, node.id, "left")}
+                        className="absolute top-1/2 -left-1.5 h-3 w-3 -translate-y-1/2 rounded-full border-2 border-slate-700 bg-sky-500 hover:bg-sky-400 hover:scale-125 cursor-crosshair z-20 transition"
+                        title="왼쪽으로 화살표 그리기"
+                      />
+                      {/* Right Port */}
+                      <div
+                        onMouseDown={(e) => handlePortMouseDown(e, node.id, "right")}
+                        className="absolute top-1/2 -right-1.5 h-3 w-3 -translate-y-1/2 rounded-full border-2 border-slate-700 bg-sky-500 hover:bg-sky-400 hover:scale-125 cursor-crosshair z-20 transition"
+                        title="오른쪽으로 화살표 그리기"
+                      />
+                    </>
                   )}
                 </div>
               );
@@ -540,13 +632,10 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
               const targetNode = nodes.find((n) => n.id === edge.target);
               if (!sourceNode || !targetNode) return null;
 
-              const sx = sourceNode.x + NODE_WIDTH;
-              const sy = sourceNode.y + NODE_HEIGHT / 2;
-              const tx = targetNode.x;
-              const ty = targetNode.y + NODE_HEIGHT / 2;
+              const { source: sp, target: tp } = getClosestPorts(sourceNode, targetNode);
               
-              const midX = sx + (tx - sx) * 0.5;
-              const midY = sy + (ty - sy) * 0.5;
+              const midX = sp.x + (tp.x - sp.x) * 0.5;
+              const midY = sp.y + (tp.y - sp.y) * 0.5;
               const isSelected = selectedEdgeId === edge.id;
 
               return (
