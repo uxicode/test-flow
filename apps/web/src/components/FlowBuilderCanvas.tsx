@@ -12,7 +12,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { analyzeFlowToTestCases, generateMermaidFromFlow, type CustomNode, type CustomEdge } from "../services/doc-tc/flowGraphAnalyzer";
+import { analyzeFlowToTestCases, generateMermaidFromFlow, parseMermaidToFlow, type CustomNode, type CustomEdge } from "../services/doc-tc/flowGraphAnalyzer";
 import type { GeneratedDocTestCase } from "../services/doc-tc/types";
 
 interface FlowBuilderCanvasProps {
@@ -41,9 +41,34 @@ const getClosestPorts = (sourceNode: CustomNode, targetNode: CustomNode) => {
   let bestSource = sourcePorts[1]; // default bottom
   let bestTarget = targetPorts[0]; // default top
 
+  const dy = targetNode.y - sourceNode.y;
+  const dx = targetNode.x - sourceNode.x;
+
   for (const sp of sourcePorts) {
     for (const tp of targetPorts) {
-      const dist = Math.hypot(tp.x - sp.x, tp.y - sp.y);
+      let dist = Math.hypot(tp.x - sp.x, tp.y - sp.y);
+
+      // Apply routing preference penalties based on layout orientation
+      if (Math.abs(dy) > Math.abs(dx)) {
+        // Vertical layout: prefer top-to-bottom or bottom-to-top
+        if (dy > 40) {
+          if (sp.dir !== "bottom") dist += 1000;
+          if (tp.dir !== "top") dist += 1000;
+        } else if (dy < -40) {
+          if (sp.dir !== "top") dist += 1000;
+          if (tp.dir !== "bottom") dist += 1000;
+        }
+      } else {
+        // Horizontal layout: prefer left-to-right or right-to-left
+        if (dx > 40) {
+          if (sp.dir !== "right") dist += 1000;
+          if (tp.dir !== "left") dist += 1000;
+        } else if (dx < -40) {
+          if (sp.dir !== "left") dist += 1000;
+          if (tp.dir !== "right") dist += 1000;
+        }
+      }
+
       if (dist < minDistance) {
         minDistance = dist;
         bestSource = sp;
@@ -53,6 +78,17 @@ const getClosestPorts = (sourceNode: CustomNode, targetNode: CustomNode) => {
   }
 
   return { source: bestSource, target: bestTarget };
+};
+
+const renderLabelText = (label: string) => {
+  if (!label) return null;
+  const parts = label.split(/<br\s*\/?>/gi);
+  return parts.map((part, i) => (
+    <React.Fragment key={i}>
+      {i > 0 && <br />}
+      {part}
+    </React.Fragment>
+  ));
 };
 
 const initialNodes: CustomNode[] = [
@@ -92,10 +128,13 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
   const [nodeLabel, setNodeLabel] = useState("");
-  const [nodeType, setNodeType] = useState<"input" | "default" | "output">("default");
+  const [nodeType, setNodeType] = useState<"input" | "default" | "output" | "decision" | "condition">("default");
   const [edgeLabel, setEdgeLabel] = useState("");
 
   const [previewTab, setPreviewTab] = useState<"tc" | "mermaid">("tc");
+  const [localMermaid, setLocalMermaid] = useState("");
+  const [mermaidType, setMermaidType] = useState<string>("graph");
+  const [mermaidDir, setMermaidDir] = useState<string>("TD");
 
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -259,9 +298,13 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
     setDrawingSourceId(null);
   };
 
-  const handleAddNode = (type: "input" | "default" | "output") => {
+  const handleAddNode = (type: "input" | "default" | "output" | "decision" | "condition") => {
     const id = (nodes.reduce((max, n) => Math.max(max, parseInt(n.id) || 0), 0) + 1).toString();
-    const label = type === "input" ? "시작 단계" : type === "output" ? "종료/기대결과" : "새로운 단계";
+    const label = 
+      type === "input" ? "시작 단계" : 
+      type === "output" ? "종료/기대결과" : 
+      type === "decision" ? "결정 조건?" :
+      type === "condition" ? "진행 조건" : "새로운 단계";
     
     const viewCenterX = (-pan.x + 180) / zoom;
     const viewCenterY = (-pan.y + 200) / zoom;
@@ -356,8 +399,31 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   }, [generatedTestCases, onTestCasesGenerated]);
 
   const mermaidCode = useMemo(() => {
-    return generateMermaidFromFlow(nodes, edges);
-  }, [nodes, edges]);
+    return generateMermaidFromFlow(nodes, edges, mermaidType, mermaidDir);
+  }, [nodes, edges, mermaidType, mermaidDir]);
+
+  useEffect(() => {
+    setLocalMermaid(mermaidCode);
+  }, [mermaidCode]);
+
+  const handleApplyMermaid = () => {
+    try {
+      const parsed = parseMermaidToFlow(localMermaid);
+      if (parsed.nodes.length === 0) {
+        alert("유효한 Mermaid 노드나 선을 찾을 수 없습니다. 형식을 확인해주세요.");
+        return;
+      }
+      setMermaidType(parsed.type);
+      setMermaidDir(parsed.dir);
+      setNodes(parsed.nodes);
+      setEdges(parsed.edges);
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+    } catch (err) {
+      console.error("Mermaid parsing error:", err);
+      alert("Mermaid 코드를 파싱하는 중 오류가 발생했습니다.");
+    }
+  };
 
   const drawBezierPath = (
     sx: number,
@@ -406,6 +472,22 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
           >
             <Plus size={13} />
             일반 노드
+          </button>
+          <button
+            type="button"
+            onClick={() => handleAddNode("decision")}
+            className="flex items-center gap-1 rounded bg-amber-950/80 px-2 py-1 text-xs font-medium text-amber-300 border border-amber-800 hover:bg-amber-900 transition"
+          >
+            <Plus size={13} />
+            결정 노드
+          </button>
+          <button
+            type="button"
+            onClick={() => handleAddNode("condition")}
+            className="flex items-center gap-1 rounded bg-purple-950/80 px-2 py-1 text-xs font-medium text-purple-300 border border-purple-800 hover:bg-purple-900 transition"
+          >
+            <Plus size={13} />
+            조건 노드
           </button>
           <button
             type="button"
@@ -552,24 +634,87 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
 
             {nodes.map((node) => {
               const isSelected = selectedNodeId === node.id;
+              const isSvgShape = node.type === "decision" || node.type === "condition" || (!node.type && (node.label.endsWith("?") || node.label.includes("여부") || node.label.includes("인가")));
               
               let borderStyle = "border-slate-800 hover:border-slate-600";
               let bgStyle = "bg-slate-950/95";
               let textColor = "text-slate-100";
+              let roundedStyle = "rounded-lg";
 
               if (node.type === "input") {
                 bgStyle = "bg-sky-950/80";
                 borderStyle = isSelected ? "border-sky-400" : "border-sky-700/80 hover:border-sky-500";
                 textColor = "text-sky-200";
+                roundedStyle = "rounded-full";
               } else if (node.type === "output") {
                 bgStyle = "bg-emerald-950/80";
-                borderStyle = isSelected ? "border-emerald-400" : "border-emerald-700/80 hover:border-emerald-500";
+                borderStyle = isSelected ? "border-emerald-400 border-x-4" : "border-emerald-700/80 border-x-4 hover:border-emerald-500";
                 textColor = "text-emerald-200";
-              } else if (node.label.endsWith("?") || node.label.includes("여부") || node.label.includes("인가")) {
+              } else if (node.type === "decision" || (!node.type && (node.label.endsWith("?") || node.label.includes("여부") || node.label.includes("인가")))) {
+                bgStyle = "bg-amber-950/80";
                 borderStyle = isSelected ? "border-amber-400" : "border-amber-800 hover:border-amber-600";
+                textColor = "text-amber-200";
+              } else if (node.type === "condition") {
+                bgStyle = "bg-purple-950/80";
+                borderStyle = isSelected ? "border-purple-400" : "border-purple-800 hover:border-purple-600";
+                textColor = "text-purple-200";
               } else if (isSelected) {
                 borderStyle = "border-sky-500";
               }
+
+              const renderNodeContent = () => {
+                if (node.type === "decision" || (!node.type && (node.label.endsWith("?") || node.label.includes("여부") || node.label.includes("인가")))) {
+                  const strokeColor = isSelected ? "#fbbf24" : "#b45309";
+                  const fillColor = isSelected ? "#451a03" : "#1c0d02";
+                  return (
+                    <>
+                      <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 180 50" preserveAspectRatio="none">
+                        <path
+                          d="M 90 2 L 178 25 L 90 48 L 2 25 Z"
+                          fill={fillColor}
+                          stroke={strokeColor}
+                          strokeWidth={2}
+                        />
+                      </svg>
+                      <div className="relative z-10 flex-1 overflow-hidden px-4 text-center select-none pointer-events-none">
+                        <p className="text-[10px] font-semibold leading-tight text-center text-amber-200 whitespace-normal max-h-[36px] overflow-hidden">
+                          {renderLabelText(node.label)}
+                        </p>
+                      </div>
+                    </>
+                  );
+                }
+
+                if (node.type === "condition") {
+                  const strokeColor = isSelected ? "#c084fc" : "#7e22ce";
+                  const fillColor = isSelected ? "#3b0764" : "#1a052e";
+                  return (
+                    <>
+                      <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 180 50" preserveAspectRatio="none">
+                        <path
+                          d="M 25 2 L 155 2 L 178 25 L 155 48 L 25 48 L 2 25 Z"
+                          fill={fillColor}
+                          stroke={strokeColor}
+                          strokeWidth={2}
+                        />
+                      </svg>
+                      <div className="relative z-10 flex-1 overflow-hidden px-4 text-center select-none pointer-events-none">
+                        <p className="text-[10px] font-semibold leading-tight text-center text-purple-200 whitespace-normal max-h-[36px] overflow-hidden">
+                          {renderLabelText(node.label)}
+                        </p>
+                      </div>
+                    </>
+                  );
+                }
+
+                return (
+                  <div className="flex-1 overflow-hidden pr-2 select-none pointer-events-none flex items-center justify-center h-full">
+                    <p className="text-[11px] font-semibold text-center leading-tight whitespace-normal max-h-[38px] overflow-hidden">
+                      {renderLabelText(node.label)}
+                    </p>
+                  </div>
+                );
+              };
 
               return (
                 <div
@@ -578,7 +723,11 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                   onMouseUp={(e) => handleNodeMouseUp(e, node.id)}
                   onDragStart={(e) => e.preventDefault()}
                   draggable="false"
-                  className={`absolute pointer-events-auto flex items-center justify-between rounded-lg border-2 ${bgStyle} ${borderStyle} ${textColor} px-3 py-1.5 transition-shadow shadow-md select-none`}
+                  className={`absolute pointer-events-auto flex items-center justify-between ${
+                    isSvgShape 
+                      ? "bg-transparent border-0" 
+                      : `${bgStyle} ${borderStyle} ${textColor} ${roundedStyle} border-2 px-3 py-1.5 shadow-md`
+                  } transition-shadow select-none`}
                   style={{
                     left: node.x,
                     top: node.y,
@@ -588,11 +737,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                     zIndex: isSelected ? 10 : 2,
                   }}
                 >
-                  <div className="flex-1 overflow-hidden pr-2">
-                    <p className="truncate text-xs font-semibold text-center leading-snug">
-                      {node.label}
-                    </p>
-                  </div>
+                  {renderNodeContent()}
 
                   {node.type !== "output" && (
                     <>
@@ -712,6 +857,8 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                   >
                     <option value="input">시작 단계 (Input)</option>
                     <option value="default">일반 단계 (Process)</option>
+                    <option value="decision">결정 조건 (Decision)</option>
+                    <option value="condition">진행 조건 (Condition)</option>
                     <option value="output">종료/기대결과 (Output)</option>
                   </select>
                 </label>
@@ -805,11 +952,27 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
               </button>
             </nav>
 
-            <div className="flex-1 overflow-y-auto p-3 text-xs">
+            <div className="flex-1 overflow-y-auto p-3 text-xs flex flex-col">
               {previewTab === "mermaid" ? (
-                <pre className="rounded bg-slate-900 p-2 text-[10px] text-slate-300 font-mono overflow-x-auto whitespace-pre-wrap select-all">
-                  {mermaidCode}
-                </pre>
+                <div className="flex flex-col gap-2 flex-grow h-full min-h-[300px]">
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    Mermaid 코드를 편집한 후 아래 반영 버튼을 누르면 플로우 차트와 테스트 케이스가 동기화됩니다.
+                  </p>
+                  <textarea
+                    value={localMermaid}
+                    onChange={(e) => setLocalMermaid(e.target.value)}
+                    className="flex-grow w-full rounded border border-slate-800 bg-slate-900 p-2 text-[10px] text-slate-300 font-mono focus:border-sky-500 focus:outline-none resize-none min-h-[220px]"
+                    placeholder="graph TD&#10;  A([시작]) --> B[진행]"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyMermaid}
+                    className="flex items-center justify-center gap-1.5 rounded bg-sky-600 hover:bg-sky-500 active:bg-sky-700 py-2 px-3 text-xs font-semibold text-white transition shadow"
+                  >
+                    <Sparkles size={13} />
+                    플로우에 반영하기
+                  </button>
+                </div>
               ) : (
                 <ul className="flex flex-col gap-2">
                   {generatedTestCases.length === 0 ? (

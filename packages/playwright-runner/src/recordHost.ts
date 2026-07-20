@@ -233,7 +233,10 @@ async function main(): Promise<void> {
   let lastUrl = "";
   const intervals: ReturnType<typeof setInterval>[] = [];
 
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({
+    headless: false,
+    args: ["--window-size=1920,1080"],
+  });
   const videoDir = path.join(sessionDir, "video");
   await fs.mkdir(videoDir, { recursive: true });
 
@@ -241,6 +244,7 @@ async function main(): Promise<void> {
     recordVideo: { dir: videoDir },
     // CSP 우회: addInitScript/evaluate 가 CSP에 막히지 않도록
     bypassCSP: true,
+    viewport: { width: 1920, height: 1080 },
   });
   // addInitScript: 순수 JS로 작성 (TypeScript 타입 제거) — tsx 컴파일 의존 없음
   await context.addInitScript(CAPTURE_SCRIPT);

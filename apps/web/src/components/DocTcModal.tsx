@@ -243,7 +243,7 @@ export function DocTcModal({
       role="dialog"
       aria-modal="true"
     >
-      <div className={`flex max-h-[90vh] w-full ${tab === "flowbuilder" ? "max-w-5xl" : "max-w-3xl"} flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl transition-all duration-300`}>
+      <div className={`flex max-h-[90vh] w-full ${tab === "flowbuilder" ? "max-w-7xl" : "max-w-3xl"} flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl transition-all duration-300`}>
         <header className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
           <div>
             <h2 className="text-base font-semibold text-slate-100">

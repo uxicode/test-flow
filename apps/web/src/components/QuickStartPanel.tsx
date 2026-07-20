@@ -64,7 +64,7 @@ export function QuickStartPanel({
           </button>
         </div>
       </div>
-      <p className="text-xs text-slate-600">
+      <p className="text-xs text-slate-600 text-white">
         이미 목록에 시나리오가 있으면 왼쪽에서 선택하세요. 기획 문서(PDF·DOCX·HWPX·MD·TXT)가 있으면
         <strong className="text-slate-400"> 문서로 TC 만들기</strong>로 자동 생성할 수 있습니다.
       </p>
