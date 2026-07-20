@@ -15,8 +15,89 @@ function cleanTerm(text: string): string {
  * Parses user-friendly description sentences from Flowchart Nodes into 
  * functional, runnable Playwright scenario Steps.
  */
+/**
+ * Extracts precise click targets (text, role, css) from action descriptions or Playwright code snippets.
+ */
+function extractClickTarget(raw: string): { strategy: "role" | "text" | "css"; role?: string; value: string } {
+  let s = raw.trim();
+
+  // 1. Check for Playwright getByText('...')
+  const getByTextMatch = s.match(/getByText\(\s*['"]([^'"]+)['"]\s*\)/i);
+  if (getByTextMatch) {
+    return { strategy: "text", value: getByTextMatch[1].trim() };
+  }
+
+  // 2. Check for Playwright getByRole('...', { name: '...' })
+  const getByRoleMatch = s.match(/getByRole\(\s*['"]([^'"]+)['"]\s*,\s*\{\s*name:\s*['"]([^'"]+)['"]/i);
+  if (getByRoleMatch) {
+    return { strategy: "role", role: getByRoleMatch[1], value: getByRoleMatch[2].trim() };
+  }
+
+  // 3. Check for Playwright locator('...') or css('...') or css: ...
+  const locatorMatch =
+    s.match(/(?:locator|css)\(\s*'([^']+)'\s*\)/i) ||
+    s.match(/(?:locator|css)\(\s*"([^"]+)"\s*\)/i) ||
+    s.match(/(?:locator|css)\(\s*([^\)]+)\s*\)/i) ||
+    s.match(/css:\s*([^\s<]+)/i);
+  if (locatorMatch) {
+    return { strategy: "css", value: locatorMatch[1].trim() };
+  }
+
+  // Check for direct CSS selector patterns like .class-name or #id-name or [attr]
+  const directCssMatch = s.match(/(?:\s|^)(\.[a-zA-Z0-9_-]{2,}|#[a-zA-Z0-9_-]{2,}|\[[a-zA-Z0-9_=-]+\])(?:\s|$|<)/);
+  if (directCssMatch && !s.includes("getByText") && !s.includes("getByRole")) {
+    return { strategy: "css", value: directCssMatch[1].trim() };
+  }
+
+  const isExplicitButton = /버튼|\bbutton\b/i.test(s);
+  const isExplicitLink = /링크|\blink\b/i.test(s);
+  const isTableRow = /(리스트\s*행|테이블\s*행|표\s*행|행\s*클릭|행\s*선택|\b(td|tr)\b)/i.test(s);
+
+  // 4. Check for quoted text like "진료의뢰/회송" or '진료의뢰/회송'
+  const quoteMatch = s.match(/["']([^"']+)["']/);
+  let valueText = quoteMatch ? quoteMatch[1].trim() : "";
+
+  if (!valueText) {
+    // 5. Strip leading action verbs
+    let cleaned = s.replace(/^(click|press|클릭|선택|누름)\s+/i, "");
+
+    // 6. Strip trailing sentence suffixes and action words
+    cleaned = cleaned.replace(/\s*(조건에서|단계로|수행|진행|클릭|누름|버튼|링크|메뉴|텍스트).*$/gi, "");
+
+    // 7. Strip trailing CSS selectors like .referral-confirm-popup__close
+    cleaned = cleaned.replace(/\s*\.[a-zA-Z0-9_-]+.*$/g, "");
+
+    valueText = cleaned.trim();
+  }
+
+  if (!valueText) valueText = "확인";
+
+  if (isExplicitButton) {
+    return { strategy: "role", role: "button", value: valueText };
+  }
+  if (isExplicitLink) {
+    return { strategy: "role", role: "link", value: valueText };
+  }
+  if (isTableRow) {
+    return { strategy: "css", value: "td" };
+  }
+
+  // Default to text strategy for menu items, text elements, and general elements
+  return { strategy: "text", value: valueText };
+}
+
+/**
+ * Parses user-friendly description sentences from Flowchart Nodes into 
+ * functional, runnable Playwright scenario Steps.
+ */
 function parseTextToRealStep(text: string): Step[] {
+  if (!text) return [];
+
+  // Extract bracket content e.g. [click 진료의뢰/회송 메뉴 locator('a[href*=referral]')] 조건에서 ...
+  const bracketMatch = text.match(/^\[([\s\S]+)\]\s*(?:조건에서|조건으로|단계로|\s*$)/) || text.match(/^\[([^\]]+)\]\s*(.*)$/);
+  const actionText = bracketMatch ? bracketMatch[1].trim() : text;
   const trimmed = cleanTerm(text);
+
   if (!trimmed) return [];
 
   // Skip visual headers, purely metadata descriptions, or structural comment triggers
@@ -24,9 +105,7 @@ function parseTextToRealStep(text: string): Step[] {
     trimmed.startsWith("TC") || 
     trimmed.startsWith("[TC") ||
     trimmed.startsWith("사전 조건") || 
-    trimmed.startsWith("Given") ||
-    trimmed.startsWith("조건에서") ||
-    trimmed.includes("조건으로 진행")
+    trimmed.startsWith("Given")
   ) {
     return []; // Clean up junk 0ms wait comments
   }
@@ -34,7 +113,10 @@ function parseTextToRealStep(text: string): Step[] {
   const steps: Step[] = [];
 
   // 1. Navigation Rule: GOTO
-  if (/진입|이동|접속|열기|goto|visit|open/i.test(trimmed)) {
+  const isNavKeyword = /진입|이동|접속|열기|goto|visit|open|navigate/i.test(actionText) || /진입|이동|접속|열기|goto|visit|open|navigate/i.test(trimmed);
+  const isDirectUrl = /^(https?:\/\/|\/)/i.test(actionText.trim()) || /^(https?:\/\/|\/)/i.test(trimmed);
+
+  if (isNavKeyword || isDirectUrl) {
     let url = "/";
     if (trimmed.includes("로그인")) url = "/login";
     else if (trimmed.includes("신청") || trimmed.includes("등록")) url = "/apply";
@@ -42,7 +124,7 @@ function parseTextToRealStep(text: string): Step[] {
     else if (trimmed.includes("관리") || trimmed.includes("admin")) url = "/admin";
 
     // Attempt to extract path patterns (e.g. "/admin/users" or "http://...")
-    const urlMatch = trimmed.match(/(https?:\/\/[^\s]+|\/[a-zA-Z0-9_\-\/]+)/);
+    const urlMatch = (actionText + " " + trimmed).match(/(https?:\/\/[^\s\)\"\']+|\/[a-zA-Z0-9_\-\/]+)/);
     if (urlMatch) {
       url = urlMatch[1];
     }
@@ -55,7 +137,7 @@ function parseTextToRealStep(text: string): Step[] {
   }
 
   // 2. Interaction Rule: FILL (Inputs)
-  if (/입력|작성|타이핑|fill|input|type/i.test(trimmed)) {
+  if (/입력|작성|타이핑|fill|input|type/i.test(actionText) || /입력|작성|타이핑|fill|input|type/i.test(trimmed)) {
     const fields: string[] = [];
     if (trimmed.includes("이메일") || trimmed.includes("ID") || trimmed.includes("아이디")) {
       fields.push("이메일");
@@ -94,7 +176,7 @@ function parseTextToRealStep(text: string): Step[] {
       }
     } else {
       // Fallback for custom fields
-      let target = trimmed.replace(/(입력|작성|타이핑|fill|input|type|정보|값|\s+)/g, "");
+      let target = cleanTerm(actionText).replace(/(입력|작성|타이핑|fill|input|type|정보|값|\s+)/g, "");
       if (!target) target = "입력 필드";
       const step = createStep("fill");
       step.selectorStrategy = "placeholder";
@@ -107,17 +189,16 @@ function parseTextToRealStep(text: string): Step[] {
   }
 
   // 3. Interaction Rule: CLICK
-  if (/클릭|누름|선택|click|press|select/i.test(trimmed)) {
+  if (/클릭|누름|선택|click|press|select/i.test(actionText) || /클릭|누름|선택|click|press|select/i.test(trimmed)) {
     // Avoid double matching checkboxes
     if (!trimmed.includes("체크박스")) {
-      let target = trimmed.replace(/(버튼|링크|메뉴|클릭|누름|click|press|\s+)/g, "");
-      if (!target) target = "확인";
+      const { strategy, role, value } = extractClickTarget(actionText.includes("클릭") || actionText.includes("click") ? actionText : trimmed);
 
       const step = createStep("click");
-      step.selectorStrategy = "role";
-      step.role = "button";
-      step.selectorValue = target;
-      step.label = `버튼 클릭: "${target}"`;
+      step.selectorStrategy = strategy;
+      if (role) step.role = role;
+      step.selectorValue = value;
+      step.label = `버튼 클릭: "${value}"`;
       steps.push(step);
       return steps;
     }
@@ -137,9 +218,9 @@ function parseTextToRealStep(text: string): Step[] {
   }
 
   // 5. Timeline Rule: Real WAIT ms
-  if (/대기|기다림|wait|sleep/i.test(trimmed)) {
-    const secMatch = trimmed.match(/(\d+)\s*초/);
-    const msMatch = trimmed.match(/(\d+)\s*ms/);
+  if (/대기|기다림|wait|sleep/i.test(actionText) || /대기|기다림|wait|sleep/i.test(trimmed)) {
+    const secMatch = (actionText + " " + trimmed).match(/(\d+)\s*(?:초|s|sec)/i);
+    const msMatch = (actionText + " " + trimmed).match(/(\d+)\s*ms/i);
     let ms = 1000;
 
     if (secMatch) {
@@ -147,7 +228,7 @@ function parseTextToRealStep(text: string): Step[] {
     } else if (msMatch) {
       ms = parseInt(msMatch[1]);
     } else {
-      const numMatch = trimmed.match(/(\d+)/);
+      const numMatch = (actionText + " " + trimmed).match(/(\d+)/);
       if (numMatch) {
         const val = parseInt(numMatch[1]);
         ms = val < 50 ? val * 1000 : val;
@@ -203,24 +284,38 @@ export function convertTestCasesToSteps(
 ): Step[] {
   const steps: Step[] = [];
 
+  const addStepSafely = (step: Step) => {
+    const lastStep = steps[steps.length - 1];
+    // Deduplicate consecutive identical goto steps (e.g. goto("/url") back-to-back from precondition & step 1)
+    if (
+      lastStep &&
+      lastStep.type === "goto" &&
+      step.type === "goto" &&
+      lastStep.selectorValue === step.selectorValue
+    ) {
+      return;
+    }
+    steps.push(step);
+  };
+
   testCases.forEach((tc) => {
     // Process preconditions
     if (tc.preconditions.length > 0) {
       tc.preconditions.forEach((cond) => {
         const parsed = parseTextToRealStep(cond);
-        steps.push(...parsed);
+        parsed.forEach(addStepSafely);
       });
     }
 
     // Process each node step in the execution path
     tc.steps.forEach((line) => {
       const parsed = parseTextToRealStep(line);
-      steps.push(...parsed);
+      parsed.forEach(addStepSafely);
     });
 
     // Process expected results
     tc.expectedResults.forEach((expected) => {
-      steps.push(buildAssertStep(expected));
+      addStepSafely(buildAssertStep(expected));
     });
   });
 

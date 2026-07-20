@@ -62,7 +62,17 @@ export function stepToLine(step: Step): string {
 }
 
 export function generateSpec(steps: Step[]): string {
-  const body = steps.map((s) => `  ${stepToLine(s)}`).filter((l) => l.trim());
+  const total = steps.length;
+  const body = steps
+    .flatMap((s, idx) => {
+      const stepNum = `[STEP ${idx + 1}/${total}]`;
+      const label = s.label || `${s.type} ${s.selectorValue ?? ""}`;
+      const logLine = `  console.log(${JSON.stringify(`${stepNum} ${label}`)});`;
+      const codeLine = `  ${stepToLine(s)}`;
+      return [logLine, codeLine];
+    })
+    .filter((l) => l.trim());
+
   return [
     `import { expect, test } from "@playwright/test";`,
     ``,

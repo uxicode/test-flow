@@ -431,7 +431,8 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
     sDir: "top" | "bottom" | "left" | "right" | string,
     tx: number,
     ty: number,
-    tDir: "top" | "bottom" | "left" | "right" | string
+    tDir: "top" | "bottom" | "left" | "right" | string,
+    curveOffset: number = 0
   ) => {
     let scx = sx;
     let scy = sy;
@@ -450,6 +451,16 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
     else if (tDir === "bottom") tcy += offset;
     else if (tDir === "top") tcy -= offset;
     
+    if (curveOffset !== 0) {
+      if (sDir === "top" || sDir === "bottom") {
+        scx += curveOffset;
+        tcx += curveOffset;
+      } else {
+        scy += curveOffset;
+        tcy += curveOffset;
+      }
+    }
+
     return `M ${sx} ${sy} C ${scx} ${scy}, ${tcx} ${tcy}, ${tx} ${ty}`;
   };
 
@@ -573,8 +584,13 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                 const targetNode = nodes.find((n) => n.id === edge.target);
                 if (!sourceNode || !targetNode) return null;
 
+                const samePairEdges = edges.filter((e) => e.source === edge.source && e.target === edge.target);
+                const parallelIndex = samePairEdges.findIndex((e) => e.id === edge.id);
+                const parallelCount = samePairEdges.length;
+                const curveOffset = parallelCount > 1 ? (parallelIndex - (parallelCount - 1) / 2) * 45 : 0;
+
                 const { source: sp, target: tp } = getClosestPorts(sourceNode, targetNode);
-                const pathString = drawBezierPath(sp.x, sp.y, sp.dir, tp.x, tp.y, tp.dir);
+                const pathString = drawBezierPath(sp.x, sp.y, sp.dir, tp.x, tp.y, tp.dir, curveOffset);
                 const isSelected = selectedEdgeId === edge.id;
 
                 return (
@@ -777,10 +793,20 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
               const targetNode = nodes.find((n) => n.id === edge.target);
               if (!sourceNode || !targetNode) return null;
 
+              const samePairEdges = edges.filter((e) => e.source === edge.source && e.target === edge.target);
+              const parallelIndex = samePairEdges.findIndex((e) => e.id === edge.id);
+              const parallelCount = samePairEdges.length;
+              const labelOffset = parallelCount > 1 ? (parallelIndex - (parallelCount - 1) / 2) * 45 : 0;
+
               const { source: sp, target: tp } = getClosestPorts(sourceNode, targetNode);
               
-              const midX = sp.x + (tp.x - sp.x) * 0.5;
-              const midY = sp.y + (tp.y - sp.y) * 0.5;
+              let midX = sp.x + (tp.x - sp.x) * 0.5;
+              let midY = sp.y + (tp.y - sp.y) * 0.5;
+              if (sp.dir === "bottom" || sp.dir === "top") {
+                midX += labelOffset;
+              } else {
+                midY += labelOffset;
+              }
               const isSelected = selectedEdgeId === edge.id;
 
               return (
@@ -793,7 +819,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                     setSelectedNodeId(null);
                     setEdgeLabel(edge.label || "");
                   }}
-                  className={`absolute pointer-events-auto -translate-x-1/2 -translate-y-1/2 rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none shadow transition ${
+                  className={`absolute pointer-events-auto -translate-x-1/2 -translate-y-1/2 rounded border px-1.5 py-0.5 text-[10px] font-medium leading-tight max-w-[200px] whitespace-normal text-center shadow transition ${
                     isSelected
                       ? "border-amber-400 bg-amber-950 text-amber-200 z-30"
                       : "border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700"
@@ -803,7 +829,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                     top: midY,
                   }}
                 >
-                  {edge.label}
+                  {renderLabelText(edge.label)}
                 </button>
               );
             })}

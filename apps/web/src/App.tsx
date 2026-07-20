@@ -492,6 +492,10 @@ export default function App() {
                 onRawScriptChange={(rawScript) =>
                   updateDraft({ rawScript })
                 }
+                onRun={() => void startRun()}
+                canRun={canRun}
+                isStarting={activeRunUi.isStarting}
+                isRunning={activeRunUi.status === "running" || activeRunUi.isStarting}
               />
 
               <RunPanel

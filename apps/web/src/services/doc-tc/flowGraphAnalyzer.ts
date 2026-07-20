@@ -249,10 +249,63 @@ export function generateMermaidFromFlow(
 }
 
 /**
+ * Helper to extract forward edges for DAG level calculation by excluding back-edges (cycles).
+ */
+function getForwardEdges(nodes: CustomNode[], edges: CustomEdge[]): CustomEdge[] {
+  const inDegree: Record<string, number> = {};
+  for (const node of nodes) inDegree[node.id] = 0;
+  for (const edge of edges) {
+    if (inDegree[edge.target] !== undefined) inDegree[edge.target]++;
+  }
+
+  let roots = nodes.filter((n) => inDegree[n.id] === 0).map((n) => n.id);
+  if (roots.length === 0 && nodes.length > 0) roots = [nodes[0].id];
+
+  const forwardEdges: CustomEdge[] = [];
+  const visited = new Set<string>();
+  const activeStack = new Set<string>();
+
+  function dfs(currId: string) {
+    visited.add(currId);
+    activeStack.add(currId);
+
+    const outEdges = edges.filter((e) => e.source === currId);
+    for (const edge of outEdges) {
+      if (activeStack.has(edge.target)) {
+        // Back-edge detected! Skip for level calculation
+        continue;
+      }
+      forwardEdges.push(edge);
+      if (!visited.has(edge.target)) {
+        dfs(edge.target);
+      }
+    }
+
+    activeStack.delete(currId);
+  }
+
+  for (const rootId of roots) {
+    if (!visited.has(rootId)) {
+      dfs(rootId);
+    }
+  }
+
+  for (const node of nodes) {
+    if (!visited.has(node.id)) {
+      dfs(node.id);
+    }
+  }
+
+  return forwardEdges;
+}
+
+/**
  * Automatically calculates positions of nodes using hierarchical depth-first/breadth-first traversal.
  */
 export function layoutNodes(nodes: CustomNode[], edges: CustomEdge[], dir: string = "TD"): void {
   if (nodes.length === 0) return;
+
+  const forwardEdges = getForwardEdges(nodes, edges);
 
   const adjList: Record<string, string[]> = {};
   const inDegree: Record<string, number> = {};
@@ -262,7 +315,7 @@ export function layoutNodes(nodes: CustomNode[], edges: CustomEdge[], dir: strin
     inDegree[node.id] = 0;
   }
 
-  for (const edge of edges) {
+  for (const edge of forwardEdges) {
     if (adjList[edge.source] && adjList[edge.target] !== undefined) {
       adjList[edge.source].push(edge.target);
       inDegree[edge.target]++;
@@ -297,9 +350,6 @@ export function layoutNodes(nodes: CustomNode[], edges: CustomEdge[], dir: strin
 
     for (const nextId of neighbors) {
       const nextLevel = currLevel + 1;
-      if (nextLevel >= nodes.length) {
-        continue;
-      }
       if (!visited.has(nextId)) {
         visited.add(nextId);
         levels[nextId] = nextLevel;
@@ -415,19 +465,41 @@ export function parseMermaidToFlow(mermaidCode: string): {
       continue;
     }
 
-    // Match explicit node definitions: e.g. A([\"Label\"]) or A[\"Label\"] or A[[Label]] or A{{Label}}
+    // Mask edge labels so function calls like locator('td') or getByText('...') inside labels aren't parsed as nodes
+    const edgeLabelStore: string[] = [];
+    let lineForNodeDef = trimmed
+      .replace(
+        /(--|==|-\.)\s*(?:"([^"]*)"|'([^']*)'|([^-\s][^->=.]*?))\s*(-->|==>|\.-\s*>)/g,
+        (_, p1, q1, q2, unq, p2) => {
+          const lbl = q1 ?? q2 ?? unq ?? "";
+          const idx = edgeLabelStore.length;
+          edgeLabelStore.push(lbl);
+          return `${p1} "__ELBL_${idx}__" ${p2}`;
+        }
+      )
+      .replace(
+        /(-->|==>|-\.->)\s*\|(?:"([^"]*)"|'([^']*)'|([^|]*))\|/g,
+        (_, p1, q1, q2, unq) => {
+          const lbl = q1 ?? q2 ?? unq ?? "";
+          const idx = edgeLabelStore.length;
+          edgeLabelStore.push(lbl);
+          return `${p1}|"__ELBL_${idx}__"|`;
+        }
+      );
+
+    // Match explicit node definitions: e.g. A(["Label"]) or A["Label"] or A[[Label]] or A{{Label}}
     const nodeDefRegex = /([a-zA-Z0-9_-]+)\s*(?:\(\[|\[\[|\(\(|\{|{{|\[|\()\s*(?:"([^"]*)"|'([^']*)'|([^\])}]*?))\s*(?:\]\]|\]\)|}}|}|\]|\))/g;
     
     let match;
-    let simplifiedLine = trimmed;
+    let simplifiedLine = lineForNodeDef;
     nodeDefRegex.lastIndex = 0;
 
-    while ((match = nodeDefRegex.exec(trimmed)) !== null) {
+    while ((match = nodeDefRegex.exec(lineForNodeDef)) !== null) {
       const id = match[1];
       const label = match[2] || match[3] || match[4] || id;
       
       // Determine node type based on brackets
-      const bracketType = trimmed.substring(match.index + id.length, match.index + id.length + 3).trim();
+      const bracketType = lineForNodeDef.substring(match.index + id.length, match.index + id.length + 3).trim();
       let nodeType: "input" | "default" | "output" | "decision" | "condition" = "default";
       
       if (bracketType.startsWith("([")) {
@@ -474,13 +546,20 @@ export function parseMermaidToFlow(mermaidCode: string): {
       regex.lastIndex = 0;
       while ((edgeMatch = regex.exec(simplifiedLine)) !== null) {
         const source = edgeMatch[1];
-        const label = edgeMatch[2] || edgeMatch[3] || edgeMatch[4] || undefined;
+        let label = edgeMatch[2] || edgeMatch[3] || edgeMatch[4] || undefined;
         const target = edgeMatch[5];
+
+        // Restore masked edge label if present
+        if (label) {
+          label = label.replace(/__ELBL_(\d+)__/g, (_, idx) => edgeLabelStore[Number(idx)] ?? label);
+          // Decode HTML &quot; to "
+          label = label.replace(/&quot;/g, '"');
+        }
 
         // Clean HTML break tags <br/> from label if present
         const cleanLabel = label ? label.replace(/<br\s*\/?>/gi, " ").trim() : undefined;
 
-        if (!edges.some((e) => e.source === source && e.target === target)) {
+        if (!edges.some((e) => e.source === source && e.target === target && e.label === cleanLabel)) {
           edges.push({
             id: `e${source}-${target}-${edges.length}`,
             source,

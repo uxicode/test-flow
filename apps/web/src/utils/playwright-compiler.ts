@@ -24,14 +24,19 @@ function selectorToCode(
 
 export function generatePlaywrightScript(steps: Step[]): string {
   const lines: string[] = [];
+  const total = steps.length;
 
-  for (const step of steps) {
+  steps.forEach((step, idx) => {
     const strategy = step.selectorStrategy ?? "css";
     const selValue = step.selectorValue ?? "";
     const role = step.role ?? "button";
     const sel = selValue
       ? selectorToCode(strategy, selValue, role)
       : `page.locator("")`;
+
+    const stepNum = `[STEP ${idx + 1}/${total}]`;
+    const label = step.label || `${step.type} ${selValue}`;
+    lines.push(`  console.log(${JSON.stringify(`${stepNum} ${label}`)});`);
 
     switch (step.type) {
       case "goto":
@@ -64,14 +69,14 @@ export function generatePlaywrightScript(steps: Step[]): string {
         lines.push(`  await ${sel}.waitFor({ state: "visible" });`);
         break;
       case "screenshot": {
-        const label = step.label ? `${step.label}-` : "";
+        const screenshotLabel = step.label ? `${step.label}-` : "";
         lines.push(
-          `  await page.screenshot({ path: "/artifacts/test-results/${label}${step.id}.png", fullPage: true });`,
+          `  await page.screenshot({ path: "/artifacts/test-results/${screenshotLabel}${step.id}.png", fullPage: true });`,
         );
         break;
       }
     }
-  }
+  });
 
   return [
     `import { expect, test } from "@playwright/test";`,
