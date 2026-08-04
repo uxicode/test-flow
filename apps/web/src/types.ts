@@ -9,6 +9,7 @@ export const STEP_TYPES = [
   "wait_ms",
   "wait_for_selector",
   "screenshot",
+  "api_request",
 ] as const;
 
 export type StepType = (typeof STEP_TYPES)[number];
@@ -62,6 +63,7 @@ export const STEP_LABELS: Record<StepType, string> = {
   wait_ms: "대기 (ms)",
   wait_for_selector: "요소 대기",
   screenshot: "스크린샷",
+  api_request: "API 요청 검증",
 };
 
 export const STEP_COLORS: Record<StepType, string> = {
@@ -75,6 +77,7 @@ export const STEP_COLORS: Record<StepType, string> = {
   wait_ms: "bg-slate-700/60 text-slate-300",
   wait_for_selector: "bg-slate-700/60 text-slate-300",
   screenshot: "bg-pink-900/60 text-pink-200",
+  api_request: "bg-teal-900/60 text-teal-200",
 };
 
 export const SELECTOR_LABELS: Record<SelectorStrategy, string> = {

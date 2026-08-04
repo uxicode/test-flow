@@ -135,6 +135,7 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   const [localMermaid, setLocalMermaid] = useState("");
   const [mermaidType, setMermaidType] = useState<string>("graph");
   const [mermaidDir, setMermaidDir] = useState<string>("TD");
+  const [excludedTcIds, setExcludedTcIds] = useState<Set<string>>(new Set());
 
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -391,8 +392,9 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   }, []);
 
   const generatedTestCases = useMemo(() => {
-    return analyzeFlowToTestCases(nodes, edges);
-  }, [nodes, edges]);
+    const all = analyzeFlowToTestCases(nodes, edges);
+    return all.filter((tc) => !excludedTcIds.has(tc.id));
+  }, [nodes, edges, excludedTcIds]);
 
   useEffect(() => {
     onTestCasesGenerated(generatedTestCases);
@@ -1017,7 +1019,17 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                           }`}>
                             {tc.type === "negative" ? "예외/실패" : "정상흐름"}
                           </span>
-                          <span>경로 {idx + 1}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span>경로 {idx + 1}</span>
+                            <button
+                              type="button"
+                              onClick={() => setExcludedTcIds((prev) => new Set([...prev, tc.id]))}
+                              className="text-slate-400 hover:text-rose-300 transition-colors p-0.5"
+                              title="이 경로 제거"
+                            >
+                              ✕
+                            </button>
+                          </div>
                         </div>
                         <h5 className="font-medium text-slate-200 leading-snug break-all text-[11px]">
                           {tc.title}

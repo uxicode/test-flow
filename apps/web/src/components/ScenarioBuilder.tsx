@@ -105,7 +105,7 @@ export function ScenarioBuilder({
     if (!baseUrl.trim()) return;
     const cleanBase = baseUrl.trim().replace(/\/+$/, "");
     const updatedSteps = steps.map((step) => {
-      if (step.type === "goto") {
+      if (step.type === "goto" || step.type === "api_request") {
         let path = step.selectorValue.trim();
         if (path.startsWith("http://") || path.startsWith("https://")) {
           try {
@@ -117,11 +117,20 @@ export function ScenarioBuilder({
         }
         if (!path.startsWith("/")) path = "/" + path;
         const fullUrl = cleanBase + path;
-        return {
-          ...step,
-          selectorValue: fullUrl,
-          label: `페이지 이동: ${fullUrl}`,
-        };
+        if (step.type === "goto") {
+          return {
+            ...step,
+            selectorValue: fullUrl,
+            label: `페이지 이동: ${fullUrl}`,
+          };
+        } else {
+          const method = step.inputValue || "GET";
+          return {
+            ...step,
+            selectorValue: fullUrl,
+            label: `API 응답 검증: ${method} ${fullUrl}`,
+          };
+        }
       }
       return step;
     });
@@ -195,7 +204,7 @@ export function ScenarioBuilder({
           type="button"
           onClick={applyBaseUrl}
           className="rounded bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-500 transition-colors whitespace-nowrap"
-          title="모든 상대 경로 페이지 이동 스텝에 Base URL을 결합합니다"
+          title="모든 상대 경로 페이지 이동 및 API 요청 검증 스텝에 Base URL을 결합합니다"
         >
           Base URL 일괄 적용
         </button>
