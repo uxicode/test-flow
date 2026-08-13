@@ -123,7 +123,7 @@ export async function startHostedRecordSession(
     cwd: playwrightRunnerRoot,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env },
-    shell: process.platform === "win32",
+    shell: true,
   });
 
   const { createWriteStream } = await import("node:fs");
@@ -163,6 +163,86 @@ export async function startHostedRecordSession(
   proc.on("error", () => {
     sessions.delete(sessionId);
     broadcast(session, { type: "closed", reason: "process_error" });
+  });
+
+  sessions.set(sessionId, session);
+  return { sessionId };
+}
+
+export async function startHostedSimulateSession(
+  playwrightRunnerRoot: string,
+  recordingsDir: string,
+  url: string,
+  steps: Step[],
+  options?: { scenarioId?: string },
+): Promise<{ sessionId: string } | { error: string }> {
+  const trimmed = url.trim();
+  if (!trimmed) return { error: "url_required" };
+
+  await fs.mkdir(recordingsDir, { recursive: true });
+  const sessionId = randomUUID();
+  const sessionDir = path.join(recordingsDir, sessionId);
+  await fs.mkdir(sessionDir, { recursive: true });
+
+  await fs.writeFile(
+    path.join(sessionDir, "steps.json"),
+    JSON.stringify(steps, null, 2),
+    "utf8",
+  );
+
+  const simulateHost = path.join(playwrightRunnerRoot, "src", "simulateHost.ts");
+  const logPath = path.join(sessionDir, "simulateHost.log");
+
+  const proc = spawn("npx", ["tsx", simulateHost, sessionDir, trimmed], {
+    cwd: playwrightRunnerRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env },
+    shell: true,
+  });
+
+  const { createWriteStream } = await import("node:fs");
+  const logStream = createWriteStream(logPath, { flags: "a" });
+  proc.stderr?.pipe(logStream);
+
+  const session: HostedSession = {
+    kind: "hosted",
+    proc,
+    sessionDir,
+    steps: cloneSteps(steps),
+    past: [],
+    future: [],
+    subscribers: new Set(),
+  };
+
+  let stdoutBuffer = "";
+  proc.stdout?.on("data", (chunk: Buffer | string) => {
+    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    stdoutBuffer += text;
+    let newlineIdx;
+    while ((newlineIdx = stdoutBuffer.indexOf("\n")) >= 0) {
+      const line = stdoutBuffer.slice(0, newlineIdx).trim();
+      stdoutBuffer = stdoutBuffer.slice(newlineIdx + 1);
+      if (!line) continue;
+
+      logStream.write(line + "\n");
+
+      if (line.startsWith("TFSTEP_ACTIVE ")) {
+        try {
+          const payload = JSON.parse(line.slice("TFSTEP_ACTIVE ".length));
+          broadcast(session, { type: "step:active", ...payload });
+        } catch {}
+      } else if (line.startsWith("TFSTEP_DONE ")) {
+        try {
+          broadcast(session, { type: "step:done" });
+        } catch {}
+      }
+    }
+  });
+
+  proc.on("exit", (code) => {
+    logStream.end();
+    broadcast(session, { type: "closed", reason: `exit_${code}` });
+    sessions.delete(sessionId);
   });
 
   sessions.set(sessionId, session);

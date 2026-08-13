@@ -133,7 +133,7 @@ export function spawnPlaywrightTest(
   const cli = resolveFromRunner(runnerRoot, "@playwright/test/cli");
   return {
     command: node,
-    args: [cli, "test", "--config", playwrightConfigPath],
+    args: [cli, "test", "--config", playwrightConfigPath, "--headed"],
     options: {
       ...baseSpawnOptions(runnerRoot, extraEnv),
       stdio: ["ignore", "pipe", "pipe"],

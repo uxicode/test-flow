@@ -31,6 +31,7 @@ import {
   reorderHostedSteps,
   startCodegenSession,
   startHostedRecordSession,
+  startHostedSimulateSession,
   stopCodegenSession,
   stopHostedRecordSession,
   subscribeHosted,
@@ -496,7 +497,7 @@ async function executeRun(
   broadcast(runId, { type: "status", status: run.status });
   await persistRunRecord(runId);
 
-  const args = ["playwright", "test", "--config", playwrightConfigPath];
+  const args = ["playwright", "test", "--config", playwrightConfigPath, "--headed"];
 
   try {
     await new Promise<void>((resolve) => {
@@ -576,674 +577,709 @@ async function prepareApp(): Promise<void> {
 
   fastify.get("/health", async () => ({ ok: true }));
 
-// --- 시나리오 CRUD ---
+  // --- 시나리오 CRUD ---
 
-fastify.get("/api/scenarios", async () => {
-  return await listScenarios(scenariosDir);
-});
-
-fastify.post("/api/scenarios", async (req, reply) => {
-  const body = (req.body ?? {}) as {
-    name?: string;
-    mode?: "builder" | "script";
-    steps?: Step[];
-    rawScript?: string;
-    excelTestCases?: unknown;
-    smartTc?: unknown;
-  };
-  let excelTestCases: ExcelTestCase[] | undefined;
-  if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
-    const parsed = parseExcelTestCasesArray(body.excelTestCases);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_excel_test_cases",
-        message: "excelTestCases must be an array of ExcelTestCase objects.",
-      });
-    }
-    excelTestCases = parsed;
-  }
-  let smartTc: Parameters<typeof createScenario>[1]["smartTc"];
-  if (Object.prototype.hasOwnProperty.call(body, "smartTc")) {
-    const parsed = parseSmartTcArray(body.smartTc);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_smart_tc",
-        message: "smartTc must be an array of SmartTC objects.",
-      });
-    }
-    smartTc = parsed;
-  }
-  const scenario = await createScenario(scenariosDir, {
-    name: body.name ?? "New scenario",
-    mode: body.mode,
-    steps: body.steps,
-    rawScript: body.rawScript,
-    excelTestCases,
-    ...(smartTc !== undefined ? { smartTc } : {}),
+  fastify.get("/api/scenarios", async () => {
+    return await listScenarios(scenariosDir);
   });
-  return reply.code(201).send(scenario);
-});
 
-fastify.get("/api/scenarios/:id", async (req, reply) => {
-  const { id } = req.params as { id: string };
-  const scenario = await getScenario(scenariosDir, id);
-  if (!scenario) return reply.code(404).send({ error: "not_found" });
-  return scenario;
-});
-
-fastify.put("/api/scenarios/:id", async (req, reply) => {
-  const { id } = req.params as { id: string };
-  const body = (req.body ?? {}) as Partial<{
-    name: string;
-    mode: "builder" | "script";
-    steps: Step[];
-    rawScript: string;
-    excelTestCases: unknown;
-    smartTc: unknown;
-  }>;
-  const patch: Parameters<typeof updateScenario>[2] = {};
-  if (body.name !== undefined) patch.name = body.name;
-  if (body.mode !== undefined) patch.mode = body.mode;
-  if (body.steps !== undefined) patch.steps = body.steps;
-  if (body.rawScript !== undefined) patch.rawScript = body.rawScript;
-  if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
-    const parsed = parseExcelTestCasesArray(body.excelTestCases);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_excel_test_cases",
-        message: "excelTestCases must be an array of ExcelTestCase objects.",
-      });
+  fastify.post("/api/scenarios", async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      name?: string;
+      mode?: "builder" | "script";
+      steps?: Step[];
+      rawScript?: string;
+      excelTestCases?: unknown;
+      smartTc?: unknown;
+    };
+    let excelTestCases: ExcelTestCase[] | undefined;
+    if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
+      const parsed = parseExcelTestCasesArray(body.excelTestCases);
+      if (parsed === null) {
+        return reply.code(400).send({
+          error: "invalid_excel_test_cases",
+          message: "excelTestCases must be an array of ExcelTestCase objects.",
+        });
+      }
+      excelTestCases = parsed;
     }
-    patch.excelTestCases = parsed;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "smartTc")) {
-    const parsed = parseSmartTcArray(body.smartTc);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_smart_tc",
-        message: "smartTc must be an array of SmartTC objects.",
-      });
+    let smartTc: Parameters<typeof createScenario>[1]["smartTc"];
+    if (Object.prototype.hasOwnProperty.call(body, "smartTc")) {
+      const parsed = parseSmartTcArray(body.smartTc);
+      if (parsed === null) {
+        return reply.code(400).send({
+          error: "invalid_smart_tc",
+          message: "smartTc must be an array of SmartTC objects.",
+        });
+      }
+      smartTc = parsed;
     }
-    patch.smartTc = parsed;
-  }
-  const updated = await updateScenario(scenariosDir, id, patch);
-  if (!updated) return reply.code(404).send({ error: "not_found" });
-  return updated;
-});
+    const scenario = await createScenario(scenariosDir, {
+      name: body.name ?? "New scenario",
+      mode: body.mode,
+      steps: body.steps,
+      rawScript: body.rawScript,
+      excelTestCases,
+      ...(smartTc !== undefined ? { smartTc } : {}),
+    });
+    return reply.code(201).send(scenario);
+  });
 
-fastify.delete("/api/scenarios/:id", async (req, reply) => {
-  const { id } = req.params as { id: string };
-  const ok = await deleteScenario(scenariosDir, id);
-  if (!ok) return reply.code(404).send({ error: "not_found" });
-  return reply.code(204).send();
-});
+  fastify.get("/api/scenarios/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const scenario = await getScenario(scenariosDir, id);
+    if (!scenario) return reply.code(404).send({ error: "not_found" });
+    return scenario;
+  });
 
-// GET /api/scenarios/:id/tc — 시나리오 스텝을 SmartTC JSON으로 반환
-fastify.get("/api/scenarios/:id/tc", async (req, reply) => {
-  const { id } = req.params as { id: string };
-  const scenario = await getScenario(scenariosDir, id);
-  if (!scenario) return reply.code(404).send({ error: "not_found" });
-  if (scenario.mode !== "builder" || scenario.steps.length === 0) {
-    return reply.code(400).send({ error: "no_steps", message: "builder 모드에 스텝이 있어야 합니다." });
-  }
-  const tc = stepsToSmartTC(scenario.steps);
-  return {
-    scenarioId: scenario.id,
-    scenarioName: scenario.name,
-    totalSteps: tc.length,
-    tc,
-  };
-});
+  fastify.put("/api/scenarios/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as Partial<{
+      name: string;
+      mode: "builder" | "script";
+      steps: Step[];
+      rawScript: string;
+      excelTestCases: unknown;
+      smartTc: unknown;
+    }>;
+    const patch: Parameters<typeof updateScenario>[2] = {};
+    if (body.name !== undefined) patch.name = body.name;
+    if (body.mode !== undefined) patch.mode = body.mode;
+    if (body.steps !== undefined) patch.steps = body.steps;
+    if (body.rawScript !== undefined) patch.rawScript = body.rawScript;
+    if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
+      const parsed = parseExcelTestCasesArray(body.excelTestCases);
+      if (parsed === null) {
+        return reply.code(400).send({
+          error: "invalid_excel_test_cases",
+          message: "excelTestCases must be an array of ExcelTestCase objects.",
+        });
+      }
+      patch.excelTestCases = parsed;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "smartTc")) {
+      const parsed = parseSmartTcArray(body.smartTc);
+      if (parsed === null) {
+        return reply.code(400).send({
+          error: "invalid_smart_tc",
+          message: "smartTc must be an array of SmartTC objects.",
+        });
+      }
+      patch.smartTc = parsed;
+    }
+    const updated = await updateScenario(scenariosDir, id, patch);
+    if (!updated) return reply.code(404).send({ error: "not_found" });
+    return updated;
+  });
 
-// POST /api/tc/convert — 임의 스텝 배열을 SmartTC로 변환 (빌더 없이 바로 변환)
-fastify.post("/api/tc/convert", async (req, reply) => {
-  const body = (req.body ?? {}) as { steps?: Step[] };
-  if (!Array.isArray(body.steps) || body.steps.length === 0) {
-    return reply.code(400).send({ error: "steps_required" });
-  }
-  const tc = stepsToSmartTC(body.steps);
-  return { totalSteps: tc.length, tc };
-});
+  fastify.delete("/api/scenarios/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const ok = await deleteScenario(scenariosDir, id);
+    if (!ok) return reply.code(404).send({ error: "not_found" });
+    return reply.code(204).send();
+  });
 
-// --- 녹화 ---
+  // GET /api/scenarios/:id/tc — 시나리오 스텝을 SmartTC JSON으로 반환
+  fastify.get("/api/scenarios/:id/tc", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const scenario = await getScenario(scenariosDir, id);
+    if (!scenario) return reply.code(404).send({ error: "not_found" });
+    if (scenario.mode !== "builder" || scenario.steps.length === 0) {
+      return reply.code(400).send({ error: "no_steps", message: "builder 모드에 스텝이 있어야 합니다." });
+    }
+    const tc = stepsToSmartTC(scenario.steps);
+    return {
+      scenarioId: scenario.id,
+      scenarioName: scenario.name,
+      totalSteps: tc.length,
+      tc,
+    };
+  });
 
-fastify.post("/api/sessions/record", async (req, reply) => {
-  const body = (req.body ?? {}) as {
-    url?: string;
-    mode?: "codegen" | "hosted";
-    scenarioId?: string;
-  };
-  const url = body.url ?? "";
-  const mode = body.mode ?? "hosted";
-  if (body.scenarioId) {
-    const exists = await getScenario(scenariosDir, body.scenarioId);
-    if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
-  }
-  const result =
-    mode === "hosted"
-      ? await startHostedRecordSession(playwrightRunnerDir, recordingsDir, url, {
+  // POST /api/tc/convert — 임의 스텝 배열을 SmartTC로 변환 (빌더 없이 바로 변환)
+  fastify.post("/api/tc/convert", async (req, reply) => {
+    const body = (req.body ?? {}) as { steps?: Step[] };
+    if (!Array.isArray(body.steps) || body.steps.length === 0) {
+      return reply.code(400).send({ error: "steps_required" });
+    }
+    const tc = stepsToSmartTC(body.steps);
+    return { totalSteps: tc.length, tc };
+  });
+
+  // --- 녹화 ---
+
+  fastify.post("/api/sessions/record", async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      url?: string;
+      mode?: "codegen" | "hosted";
+      scenarioId?: string;
+    };
+    const url = body.url ?? "";
+    const mode = body.mode ?? "hosted";
+    if (body.scenarioId) {
+      const exists = await getScenario(scenariosDir, body.scenarioId);
+      if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
+    }
+    const result =
+      mode === "hosted"
+        ? await startHostedRecordSession(playwrightRunnerDir, recordingsDir, url, {
           scenarioId: body.scenarioId,
         })
-      : await startCodegenSession(playwrightRunnerDir, recordingsDir, url);
-  if ("error" in result) return reply.code(400).send(result);
-  return result;
-});
+        : await startCodegenSession(playwrightRunnerDir, recordingsDir, url);
+    if ("error" in result) return reply.code(400).send(result);
+    return result;
+  });
 
-async function mergeRecordingMetaOnStop(
-  sessionId: string,
-  bodyScenarioId?: string,
-): Promise<void> {
-  if (!isSafeRunId(sessionId)) return;
-  const dir = path.join(recordingsDir, sessionId);
-  const metaPath = path.join(dir, "recording.json");
-  let meta: Record<string, unknown> = {};
-  try {
-    const raw = await fs.readFile(metaPath, "utf8");
-    meta = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    meta = { startedAt: new Date().toISOString() };
-  }
-  if (bodyScenarioId && (meta.scenarioId == null || meta.scenarioId === "")) {
-    meta.scenarioId = bodyScenarioId;
-  }
-  meta.stoppedAt = new Date().toISOString();
-  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
-}
+  fastify.post("/api/sessions/simulate", async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      url?: string;
+      scenarioId?: string;
+      steps?: Step[];
+    };
+    let stepsToUse: Step[] = Array.isArray(body.steps) ? body.steps : [];
+    let urlToUse = body.url ?? "";
 
-interface RecordingListItem {
-  sessionId: string;
-  kind: "hosted";
-  scenarioId: string | null;
-  startedAt: string;
-  stoppedAt?: string;
-  videoUrl: string;
-  stepsJsonUrl: string;
-  smartTcJsonUrl: string;
-}
+    if (body.scenarioId) {
+      const exists = await getScenario(scenariosDir, body.scenarioId);
+      if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
+      if (stepsToUse.length === 0 && exists.steps.length > 0) {
+        stepsToUse = exists.steps;
+      }
+      if (!urlToUse && exists.steps.length > 0) {
+        const gotoStep = exists.steps.find((s) => s.type === "goto");
+        if (gotoStep?.selectorValue) urlToUse = gotoStep.selectorValue;
+      }
+    }
 
-interface RecordingMetaFile {
-  scenarioId?: string | null;
-  startedAt?: string;
-  stoppedAt?: string;
-}
+    if (!urlToUse) urlToUse = "http://localhost:3000";
 
-async function legacyRecordingMatchesScenario(
-  sessionId: string,
-  scenarioId: string,
-): Promise<boolean> {
-  const metaPath = path.join(recordingsDir, sessionId, "recording.json");
-  try {
-    await fs.access(metaPath);
-    return false;
-  } catch {
-    /* no recording.json — may be 구버전 폴더 */
-  }
-  let fileSteps: Step[] = [];
-  try {
-    const raw = await fs.readFile(
-      path.join(recordingsDir, sessionId, "steps.json"),
-      "utf8",
+    const result = await startHostedSimulateSession(
+      playwrightRunnerDir,
+      recordingsDir,
+      urlToUse,
+      stepsToUse,
+      { scenarioId: body.scenarioId },
     );
-    fileSteps = JSON.parse(raw) as Step[];
-  } catch {
-    return false;
-  }
-  const s = await getScenario(scenariosDir, scenarioId);
-  if (!s || s.mode !== "builder" || s.steps.length === 0) return false;
-  return JSON.stringify(s.steps) === JSON.stringify(fileSteps);
-}
 
-async function listRecordingsForScenario(
-  scenarioId: string,
-): Promise<RecordingListItem[]> {
-  let entries;
-  try {
-    entries = await fs.readdir(recordingsDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const out: RecordingListItem[] = [];
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    const sessionId = e.name;
-    if (!isSafeRunId(sessionId)) continue;
-    const metaPath = path.join(recordingsDir, sessionId, "recording.json");
-    let meta: RecordingMetaFile | null = null;
+    if ("error" in result) return reply.code(400).send(result);
+    return result;
+  });
+
+  async function mergeRecordingMetaOnStop(
+    sessionId: string,
+    bodyScenarioId?: string,
+  ): Promise<void> {
+    if (!isSafeRunId(sessionId)) return;
+    const dir = path.join(recordingsDir, sessionId);
+    const metaPath = path.join(dir, "recording.json");
+    let meta: Record<string, unknown> = {};
     try {
       const raw = await fs.readFile(metaPath, "utf8");
-      meta = JSON.parse(raw) as RecordingMetaFile;
+      meta = JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      meta = null;
+      meta = { startedAt: new Date().toISOString() };
     }
+    if (bodyScenarioId && (meta.scenarioId == null || meta.scenarioId === "")) {
+      meta.scenarioId = bodyScenarioId;
+    }
+    meta.stoppedAt = new Date().toISOString();
+    await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
+  }
 
-    let include = false;
-    if (meta && meta.scenarioId === scenarioId) include = true;
-    else if (!meta && (await legacyRecordingMatchesScenario(sessionId, scenarioId)))
-      include = true;
-    if (!include) continue;
+  interface RecordingListItem {
+    sessionId: string;
+    kind: "hosted";
+    scenarioId: string | null;
+    startedAt: string;
+    stoppedAt?: string;
+    videoUrl: string;
+    stepsJsonUrl: string;
+    smartTcJsonUrl: string;
+  }
 
-    const base = `/api/recordings/${sessionId}`;
-    let videoUrl = "";
+  interface RecordingMetaFile {
+    scenarioId?: string | null;
+    startedAt?: string;
+    stoppedAt?: string;
+  }
+
+  async function legacyRecordingMatchesScenario(
+    sessionId: string,
+    scenarioId: string,
+  ): Promise<boolean> {
+    const metaPath = path.join(recordingsDir, sessionId, "recording.json");
     try {
-      const videoDir = path.join(recordingsDir, sessionId, "video");
-      const names = await fs.readdir(videoDir);
-      const webm = names.find((n) => n.toLowerCase().endsWith(".webm"));
-      if (webm) videoUrl = `${base}/video/${webm}`;
+      await fs.access(metaPath);
+      return false;
     } catch {
-      /* no video */
+      /* no recording.json — may be 구버전 폴더 */
     }
-
-    let startedAt = meta?.startedAt ?? new Date(0).toISOString();
-    if (!meta?.startedAt) {
-      try {
-        const st = await fs.stat(path.join(recordingsDir, sessionId, "steps.json"));
-        startedAt = st.mtime.toISOString();
-      } catch {
-        /* keep default */
-      }
-    }
-
-    out.push({
-      sessionId,
-      kind: "hosted",
-      scenarioId: meta?.scenarioId ?? scenarioId,
-      startedAt,
-      stoppedAt: meta?.stoppedAt,
-      videoUrl,
-      stepsJsonUrl: `${base}/steps.json`,
-      smartTcJsonUrl: `${base}/smartTc.json`,
-    });
-  }
-  out.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
-  return out;
-}
-
-fastify.get("/api/recordings", async (req, reply) => {
-  const scenarioId = (req.query as { scenarioId?: string }).scenarioId;
-  if (typeof scenarioId !== "string" || scenarioId === "") {
-    return reply.code(400).send({ error: "scenarioId_required" });
-  }
-  const exists = await getScenario(scenariosDir, scenarioId);
-  if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
-  return await listRecordingsForScenario(scenarioId);
-});
-
-fastify.post("/api/sessions/:sessionId/stop", async (req, reply) => {
-  const { sessionId } = req.params as { sessionId: string };
-  const stopBody = (req.body ?? {}) as { scenarioId?: string };
-  const codegenResult = await stopCodegenSession(sessionId, recordingsDir);
-  if (!("error" in codegenResult)) {
-    const { steps, warnings } = codegenScriptToSteps(codegenResult.script);
-    return {
-      script: codegenResult.script,
-      steps,
-      smartTc: stepsToSmartTC(steps),
-      parseWarnings: warnings,
-      sessionKind: "codegen" as const,
-      sessionArtifacts: { videoUrl: "" },
-    };
-  }
-  const hosted = await stopHostedRecordSession(sessionId, recordingsDir);
-  if (!("error" in hosted)) {
-    await mergeRecordingMetaOnStop(sessionId, stopBody.scenarioId);
-    const smartTc = stepsToSmartTC(hosted.steps);
-    const smartPath = path.join(recordingsDir, sessionId, "smartTc.json");
-    await fs.writeFile(smartPath, JSON.stringify(smartTc, null, 2), "utf8");
-    return {
-      ...hosted,
-      smartTc,
-    };
-  }
-  return reply.code(400).send({
-    error: `${codegenResult.error}; ${hosted.error}`,
-  });
-});
-
-fastify.get("/api/recordings/:sessionId/*", async (req, reply) => {
-  const { sessionId } = req.params as { sessionId: string; "*": string };
-  const wildcard = (req.params as Record<string, string>)["*"] ?? "";
-  const base = path.resolve(recordingsDir, sessionId);
-  const safe = path.normalize(wildcard).replace(/^(\.\.(\/|\\|$))+/, "");
-  const filePath = path.resolve(base, safe);
-  if (!filePath.startsWith(base + path.sep) && filePath !== base)
-    return reply.code(400).send({ error: "invalid_path" });
-
-  if (safe === "smartTc.json" || safe.endsWith("/smartTc.json")) {
+    let fileSteps: Step[] = [];
     try {
-      await fs.access(filePath);
+      const raw = await fs.readFile(
+        path.join(recordingsDir, sessionId, "steps.json"),
+        "utf8",
+      );
+      fileSteps = JSON.parse(raw) as Step[];
     } catch {
-      try {
-        const raw = await fs.readFile(path.join(base, "steps.json"), "utf8");
-        const steps = JSON.parse(raw) as Step[];
-        const tc = stepsToSmartTC(steps);
-        await fs.writeFile(filePath, JSON.stringify(tc, null, 2), "utf8");
-      } catch {
-        /* 404 below */
-      }
+      return false;
     }
+    const s = await getScenario(scenariosDir, scenarioId);
+    if (!s || s.mode !== "builder" || s.steps.length === 0) return false;
+    return JSON.stringify(s.steps) === JSON.stringify(fileSteps);
   }
 
-  try {
-    const stat = await fs.stat(filePath);
-    if (stat.isDirectory()) return reply.code(404).send({ error: "not_found" });
-    reply.header("content-type", guessContentType(filePath));
-    return reply.send(createReadStream(filePath));
-  } catch {
-    return reply.code(404).send({ error: "not_found" });
-  }
-});
+  async function listRecordingsForScenario(
+    scenarioId: string,
+  ): Promise<RecordingListItem[]> {
+    let entries;
+    try {
+      entries = await fs.readdir(recordingsDir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const out: RecordingListItem[] = [];
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const sessionId = e.name;
+      if (!isSafeRunId(sessionId)) continue;
+      const metaPath = path.join(recordingsDir, sessionId, "recording.json");
+      let meta: RecordingMetaFile | null = null;
+      try {
+        const raw = await fs.readFile(metaPath, "utf8");
+        meta = JSON.parse(raw) as RecordingMetaFile;
+      } catch {
+        meta = null;
+      }
 
-// --- 실행(runs) ---
+      let include = false;
+      if (meta && meta.scenarioId === scenarioId) include = true;
+      else if (!meta && (await legacyRecordingMatchesScenario(sessionId, scenarioId)))
+        include = true;
+      if (!include) continue;
 
-fastify.post("/api/runs", async (req, reply) => {
-  const body = (req.body ?? {}) as {
-    scenarioId?: string;
-    steps?: Step[];
-    rawScript?: string;
-    excelTestCases?: unknown;
-    baseUrl?: string;
-  };
+      const base = `/api/recordings/${sessionId}`;
+      let videoUrl = "";
+      try {
+        const videoDir = path.join(recordingsDir, sessionId, "video");
+        const names = await fs.readdir(videoDir);
+        const webm = names.find((n) => n.toLowerCase().endsWith(".webm"));
+        if (webm) videoUrl = `${base}/video/${webm}`;
+      } catch {
+        /* no video */
+      }
 
-  if (body.scenarioId) {
-    const exists = await getScenario(scenariosDir, body.scenarioId);
-    if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
-  }
+      let startedAt = meta?.startedAt ?? new Date(0).toISOString();
+      if (!meta?.startedAt) {
+        try {
+          const st = await fs.stat(path.join(recordingsDir, sessionId, "steps.json"));
+          startedAt = st.mtime.toISOString();
+        } catch {
+          /* keep default */
+        }
+      }
 
-  let excelTestCasesFromBody: ExcelTestCase[] | null | undefined = undefined;
-  if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
-    const parsed = parseExcelTestCasesArray(body.excelTestCases);
-    if (parsed === null) {
-      return reply.code(400).send({
-        error: "invalid_excel_test_cases",
-        message: "excelTestCases must be an array of ExcelTestCase objects.",
+      out.push({
+        sessionId,
+        kind: "hosted",
+        scenarioId: meta?.scenarioId ?? scenarioId,
+        startedAt,
+        stoppedAt: meta?.stoppedAt,
+        videoUrl,
+        stepsJsonUrl: `${base}/steps.json`,
+        smartTcJsonUrl: `${base}/smartTc.json`,
       });
     }
-    excelTestCasesFromBody = parsed;
+    out.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+    return out;
   }
 
-  const baseUrl =
-    typeof body.baseUrl === "string" && body.baseUrl.trim() !== ""
-      ? body.baseUrl.trim()
-      : undefined;
-
-  const specContent = await resolveSpecContent({
-    scenarioId: body.scenarioId,
-    steps: body.steps,
-    rawScript: body.rawScript,
-    excelTestCasesFromBody,
-    baseUrl,
+  fastify.get("/api/recordings", async (req, reply) => {
+    const scenarioId = (req.query as { scenarioId?: string }).scenarioId;
+    if (typeof scenarioId !== "string" || scenarioId === "") {
+      return reply.code(400).send({ error: "scenarioId_required" });
+    }
+    const exists = await getScenario(scenariosDir, scenarioId);
+    if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
+    return await listRecordingsForScenario(scenarioId);
   });
 
-  const runId = randomUUID();
-  const run: RunRecord = {
-    id: runId,
-    scenarioId: body.scenarioId,
-    status: "queued",
-    log: "",
-    exitCode: null,
-    startedAt: new Date().toISOString(),
-  };
-  runs.set(runId, run);
-  await persistRunRecord(runId);
-
-  const snapshot = await resolveRunArtifactSnapshot({
-    scenarioId: body.scenarioId,
-    steps: body.steps,
-    rawScript: body.rawScript,
-    excelTestCasesFromBody,
-  });
-  void executeRun(runId, specContent, snapshot);
-
-  return reply.code(202).send({ runId });
-});
-
-fastify.get("/api/runs", async (req) => {
-  const scenarioId =
-    typeof (req.query as { scenarioId?: string }).scenarioId === "string"
-      ? (req.query as { scenarioId: string }).scenarioId
-      : undefined;
-  const rows = await listPersistedRuns();
-  let filtered = rows;
-  if (scenarioId != null && scenarioId !== "") {
-    const out: RunRecord[] = [];
-    for (const r of rows) {
-      if (await persistedRunMatchesScenarioFilter(r, scenarioId)) out.push(r);
-    }
-    filtered = out;
-  }
-  return filtered.map((r) => ({
-    id: r.id,
-    scenarioId: r.scenarioId,
-    status: r.status,
-    exitCode: r.exitCode,
-    errorMessage: r.errorMessage,
-    startedAt: r.startedAt,
-    finishedAt: r.finishedAt,
-  }));
-});
-
-fastify.get("/api/runs/:runId/script", async (req, reply) => {
-  const { runId } = req.params as { runId: string };
-  if (!isSafeRunId(runId)) return reply.code(400).send({ error: "invalid_run_id" });
-  const specPath = path.join(getRunArtifactsDir(runId), "scenario.spec.ts");
-  try {
-    const content = await fs.readFile(specPath, "utf8");
-    reply.header("content-type", "text/plain; charset=utf-8");
-    return reply.send(content);
-  } catch {
-    return reply.code(404).send({ error: "not_found" });
-  }
-});
-
-fastify.delete("/api/runs/:runId", async (req, reply) => {
-  const { runId } = req.params as { runId: string };
-  if (!isSafeRunId(runId)) return reply.code(400).send({ error: "invalid_run_id" });
-  const dir = getRunArtifactsDir(runId);
-  try {
-    await fs.rm(dir, { recursive: true, force: true });
-  } catch {
-    return reply.code(500).send({ error: "delete_failed" });
-  }
-  runs.delete(runId);
-  subscribers.delete(runId);
-  return reply.code(204).send();
-});
-
-fastify.get("/api/runs/:runId", async (req, reply) => {
-  const { runId } = req.params as { runId: string };
-  const run = await getRunRecordForApi(runId);
-  if (!run) return reply.code(404).send({ error: "not_found" });
-  const base = `/api/runs/${runId}/artifacts`;
-  const relPngs = await collectScreenshotRelPaths(runId);
-  const screenshotUrls = relPngs.map((rel) => `${base}/${rel}`);
-  const relWebms = await collectVideoRelPaths(runId);
-  const videoUrls = relWebms.map((rel) => `${base}/${rel}`);
-  return {
-    id: run.id,
-    scenarioId: run.scenarioId,
-    status: run.status,
-    exitCode: run.exitCode,
-    errorMessage: run.errorMessage,
-    startedAt: run.startedAt,
-    finishedAt: run.finishedAt,
-    log: run.log,
-    artifacts: {
-      reportIndex: `${base}/playwright-report/index.html`,
-      testResultsDir: `${base}/test-results`,
-      screenshotUrls,
-      videoUrls,
-    },
-  };
-});
-
-fastify.get("/api/runs/:runId/artifacts/*", async (req, reply) => {
-  const { runId } = req.params as { runId: string; "*": string };
-  const wildcard = (req.params as Record<string, string>)["*"] ?? "";
-  const safe = path.normalize(wildcard).replace(/^(\.\.(\/|\\|$))+/, "");
-  const filePath = resolveArtifactPath(runId, safe);
-  if (!filePath) return reply.code(400).send({ error: "invalid_path" });
-
-  try {
-    const stat = await fs.stat(filePath);
-    if (stat.isDirectory()) return reply.code(404).send({ error: "not_found" });
-    reply.header("content-type", guessContentType(filePath));
-    return reply.send(createReadStream(filePath));
-  } catch {
-    return reply.code(404).send({ error: "not_found" });
-  }
-});
-
-fastify.get("/ws/runs/:runId", { websocket: true }, (socket, req) => {
-  const { runId } = req.params as { runId: string };
-  void (async () => {
-    const run = await getRunRecordForApi(runId);
-    if (!run) {
-      socket.close(1008, "unknown_run");
-      return;
-    }
-
-    const send = (payload: string) => {
-      try {
-        socket.send(payload);
-      } catch {
-        /* 무시 */
-      }
-    };
-
-    const unsubscribe = subscribe(runId, send);
-    send(JSON.stringify({ type: "snapshot", status: run.status, log: run.log }));
-    socket.on("close", unsubscribe);
-  })();
-});
-
-/* Cypress Studio 스타일 실시간 녹화 스튜디오용 WS 채널.
-   접속 시 현재 스냅샷을 내려주고, 이후 서버가 step:added/snapshot/closed 이벤트를 push.
-   클라이언트는 patch/delete/add/reorder/undo/redo JSON 메시지로 편집을 발행한다. */
-interface StudioIncomingBase {
-  type: string;
-}
-interface StudioPatchMsg extends StudioIncomingBase {
-  type: "patch";
-  id: string;
-  patch: Partial<Step>;
-}
-interface StudioDeleteMsg extends StudioIncomingBase {
-  type: "delete";
-  id: string;
-}
-interface StudioAddMsg extends StudioIncomingBase {
-  type: "add";
-  step: Partial<Step> & { type: Step["type"] };
-  atIndex?: number;
-}
-interface StudioReorderMsg extends StudioIncomingBase {
-  type: "reorder";
-  ids: string[];
-}
-interface StudioHistoryMsg extends StudioIncomingBase {
-  type: "undo" | "redo";
-}
-type StudioIncoming =
-  | StudioPatchMsg
-  | StudioDeleteMsg
-  | StudioAddMsg
-  | StudioReorderMsg
-  | StudioHistoryMsg;
-
-function safeStudioMessage(raw: unknown): StudioIncoming | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const r = raw as Record<string, unknown>;
-  const t = r.type;
-  if (t === "patch" && typeof r.id === "string" && typeof r.patch === "object" && r.patch !== null) {
-    return { type: "patch", id: r.id, patch: r.patch as Partial<Step> };
-  }
-  if (t === "delete" && typeof r.id === "string") {
-    return { type: "delete", id: r.id };
-  }
-  if (t === "add" && typeof r.step === "object" && r.step !== null) {
-    const step = r.step as Record<string, unknown>;
-    if (typeof step.type === "string") {
+  fastify.post("/api/sessions/:sessionId/stop", async (req, reply) => {
+    const { sessionId } = req.params as { sessionId: string };
+    const stopBody = (req.body ?? {}) as { scenarioId?: string };
+    const codegenResult = await stopCodegenSession(sessionId, recordingsDir);
+    if (!("error" in codegenResult)) {
+      const { steps, warnings } = codegenScriptToSteps(codegenResult.script);
       return {
-        type: "add",
-        step: step as Partial<Step> & { type: Step["type"] },
-        atIndex: typeof r.atIndex === "number" ? r.atIndex : undefined,
+        script: codegenResult.script,
+        steps,
+        smartTc: stepsToSmartTC(steps),
+        parseWarnings: warnings,
+        sessionKind: "codegen" as const,
+        sessionArtifacts: { videoUrl: "" },
       };
     }
-  }
-  if (t === "reorder" && Array.isArray(r.ids) && r.ids.every((x) => typeof x === "string")) {
-    return { type: "reorder", ids: r.ids as string[] };
-  }
-  if (t === "undo" || t === "redo") return { type: t };
-  return null;
-}
+    const hosted = await stopHostedRecordSession(sessionId, recordingsDir);
+    if (!("error" in hosted)) {
+      await mergeRecordingMetaOnStop(sessionId, stopBody.scenarioId);
+      const smartTc = stepsToSmartTC(hosted.steps);
+      const smartPath = path.join(recordingsDir, sessionId, "smartTc.json");
+      await fs.writeFile(smartPath, JSON.stringify(smartTc, null, 2), "utf8");
+      return {
+        ...hosted,
+        smartTc,
+      };
+    }
+    return reply.code(400).send({
+      error: `${codegenResult.error}; ${hosted.error}`,
+    });
+  });
 
-fastify.get(
-  "/ws/sessions/record/:sessionId",
-  { websocket: true },
-  (socket, req) => {
-    const { sessionId } = req.params as { sessionId: string };
-    const current = getHostedSteps(sessionId);
-    if (current === null) {
-      socket.close(1008, "unknown_session");
-      return;
+  fastify.get("/api/recordings/:sessionId/*", async (req, reply) => {
+    const { sessionId } = req.params as { sessionId: string; "*": string };
+    const wildcard = (req.params as Record<string, string>)["*"] ?? "";
+    const base = path.resolve(recordingsDir, sessionId);
+    const safe = path.normalize(wildcard).replace(/^(\.\.(\/|\\|$))+/, "");
+    const filePath = path.resolve(base, safe);
+    if (!filePath.startsWith(base + path.sep) && filePath !== base)
+      return reply.code(400).send({ error: "invalid_path" });
+
+    if (safe === "smartTc.json" || safe.endsWith("/smartTc.json")) {
+      try {
+        await fs.access(filePath);
+      } catch {
+        try {
+          const raw = await fs.readFile(path.join(base, "steps.json"), "utf8");
+          const steps = JSON.parse(raw) as Step[];
+          const tc = stepsToSmartTC(steps);
+          await fs.writeFile(filePath, JSON.stringify(tc, null, 2), "utf8");
+        } catch {
+          /* 404 below */
+        }
+      }
     }
 
-    const send = (payload: string) => {
-      try {
-        socket.send(payload);
-      } catch {
-        /* ignore */
-      }
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.isDirectory()) return reply.code(404).send({ error: "not_found" });
+      reply.header("content-type", guessContentType(filePath));
+      return reply.send(createReadStream(filePath));
+    } catch {
+      return reply.code(404).send({ error: "not_found" });
+    }
+  });
+
+  // --- 실행(runs) ---
+
+  fastify.post("/api/runs", async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      scenarioId?: string;
+      steps?: Step[];
+      rawScript?: string;
+      excelTestCases?: unknown;
+      baseUrl?: string;
     };
 
-    const unsubscribe = subscribeHosted(sessionId, send);
-    send(JSON.stringify({ type: "snapshot", steps: current }));
+    if (body.scenarioId) {
+      const exists = await getScenario(scenariosDir, body.scenarioId);
+      if (!exists) return reply.code(404).send({ error: "scenario_not_found" });
+    }
 
-    socket.on("message", (raw: Buffer | ArrayBuffer | string) => {
-      let text: string;
-      if (typeof raw === "string") text = raw;
-      else if (Buffer.isBuffer(raw)) text = raw.toString("utf8");
-      else text = Buffer.from(new Uint8Array(raw)).toString("utf8");
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        return;
+    let excelTestCasesFromBody: ExcelTestCase[] | null | undefined = undefined;
+    if (Object.prototype.hasOwnProperty.call(body, "excelTestCases")) {
+      const parsed = parseExcelTestCasesArray(body.excelTestCases);
+      if (parsed === null) {
+        return reply.code(400).send({
+          error: "invalid_excel_test_cases",
+          message: "excelTestCases must be an array of ExcelTestCase objects.",
+        });
       }
-      const msg = safeStudioMessage(parsed);
-      if (!msg) return;
-      switch (msg.type) {
-        case "patch":
-          patchHostedStep(sessionId, msg.id, msg.patch);
-          break;
-        case "delete":
-          deleteHostedStep(sessionId, msg.id);
-          break;
-        case "add":
-          addHostedStep(sessionId, msg.step, msg.atIndex);
-          break;
-        case "reorder":
-          reorderHostedSteps(sessionId, msg.ids);
-          break;
-        case "undo":
-          undoHosted(sessionId);
-          break;
-        case "redo":
-          redoHosted(sessionId);
-          break;
-      }
+      excelTestCasesFromBody = parsed;
+    }
+
+    const baseUrl =
+      typeof body.baseUrl === "string" && body.baseUrl.trim() !== ""
+        ? body.baseUrl.trim()
+        : undefined;
+
+    const specContent = await resolveSpecContent({
+      scenarioId: body.scenarioId,
+      steps: body.steps,
+      rawScript: body.rawScript,
+      excelTestCasesFromBody,
+      baseUrl,
     });
 
-    socket.on("close", unsubscribe);
-  },
-);
+    const runId = randomUUID();
+    const run: RunRecord = {
+      id: runId,
+      scenarioId: body.scenarioId,
+      status: "queued",
+      log: "",
+      exitCode: null,
+      startedAt: new Date().toISOString(),
+    };
+    runs.set(runId, run);
+    await persistRunRecord(runId);
 
-fastify.get("/api/sessions/record/:sessionId/steps", async (req, reply) => {
-  const { sessionId } = req.params as { sessionId: string };
-  const steps = getHostedSteps(sessionId);
-  if (steps === null) return reply.code(404).send({ error: "session_not_found" });
-  return { steps };
-});
+    const snapshot = await resolveRunArtifactSnapshot({
+      scenarioId: body.scenarioId,
+      steps: body.steps,
+      rawScript: body.rawScript,
+      excelTestCasesFromBody,
+    });
+    void executeRun(runId, specContent, snapshot);
+
+    return reply.code(202).send({ runId });
+  });
+
+  fastify.get("/api/runs", async (req) => {
+    const scenarioId =
+      typeof (req.query as { scenarioId?: string }).scenarioId === "string"
+        ? (req.query as { scenarioId: string }).scenarioId
+        : undefined;
+    const rows = await listPersistedRuns();
+    let filtered = rows;
+    if (scenarioId != null && scenarioId !== "") {
+      const out: RunRecord[] = [];
+      for (const r of rows) {
+        if (await persistedRunMatchesScenarioFilter(r, scenarioId)) out.push(r);
+      }
+      filtered = out;
+    }
+    return filtered.map((r) => ({
+      id: r.id,
+      scenarioId: r.scenarioId,
+      status: r.status,
+      exitCode: r.exitCode,
+      errorMessage: r.errorMessage,
+      startedAt: r.startedAt,
+      finishedAt: r.finishedAt,
+    }));
+  });
+
+  fastify.get("/api/runs/:runId/script", async (req, reply) => {
+    const { runId } = req.params as { runId: string };
+    if (!isSafeRunId(runId)) return reply.code(400).send({ error: "invalid_run_id" });
+    const specPath = path.join(getRunArtifactsDir(runId), "scenario.spec.ts");
+    try {
+      const content = await fs.readFile(specPath, "utf8");
+      reply.header("content-type", "text/plain; charset=utf-8");
+      return reply.send(content);
+    } catch {
+      return reply.code(404).send({ error: "not_found" });
+    }
+  });
+
+  fastify.delete("/api/runs/:runId", async (req, reply) => {
+    const { runId } = req.params as { runId: string };
+    if (!isSafeRunId(runId)) return reply.code(400).send({ error: "invalid_run_id" });
+    const dir = getRunArtifactsDir(runId);
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+    } catch {
+      return reply.code(500).send({ error: "delete_failed" });
+    }
+    runs.delete(runId);
+    subscribers.delete(runId);
+    return reply.code(204).send();
+  });
+
+  fastify.get("/api/runs/:runId", async (req, reply) => {
+    const { runId } = req.params as { runId: string };
+    const run = await getRunRecordForApi(runId);
+    if (!run) return reply.code(404).send({ error: "not_found" });
+    const base = `/api/runs/${runId}/artifacts`;
+    const relPngs = await collectScreenshotRelPaths(runId);
+    const screenshotUrls = relPngs.map((rel) => `${base}/${rel}`);
+    const relWebms = await collectVideoRelPaths(runId);
+    const videoUrls = relWebms.map((rel) => `${base}/${rel}`);
+    return {
+      id: run.id,
+      scenarioId: run.scenarioId,
+      status: run.status,
+      exitCode: run.exitCode,
+      errorMessage: run.errorMessage,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      log: run.log,
+      artifacts: {
+        reportIndex: `${base}/playwright-report/index.html`,
+        testResultsDir: `${base}/test-results`,
+        screenshotUrls,
+        videoUrls,
+      },
+    };
+  });
+
+  fastify.get("/api/runs/:runId/artifacts/*", async (req, reply) => {
+    const { runId } = req.params as { runId: string; "*": string };
+    const wildcard = (req.params as Record<string, string>)["*"] ?? "";
+    const safe = path.normalize(wildcard).replace(/^(\.\.(\/|\\|$))+/, "");
+    const filePath = resolveArtifactPath(runId, safe);
+    if (!filePath) return reply.code(400).send({ error: "invalid_path" });
+
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.isDirectory()) return reply.code(404).send({ error: "not_found" });
+      reply.header("content-type", guessContentType(filePath));
+      return reply.send(createReadStream(filePath));
+    } catch {
+      return reply.code(404).send({ error: "not_found" });
+    }
+  });
+
+  fastify.get("/ws/runs/:runId", { websocket: true }, (socket, req) => {
+    const { runId } = req.params as { runId: string };
+    void (async () => {
+      const run = await getRunRecordForApi(runId);
+      if (!run) {
+        socket.close(1008, "unknown_run");
+        return;
+      }
+
+      const send = (payload: string) => {
+        try {
+          socket.send(payload);
+        } catch {
+          /* 무시 */
+        }
+      };
+
+      const unsubscribe = subscribe(runId, send);
+      send(JSON.stringify({ type: "snapshot", status: run.status, log: run.log }));
+      socket.on("close", unsubscribe);
+    })();
+  });
+
+  /* Cypress Studio 스타일 실시간 녹화 스튜디오용 WS 채널.
+     접속 시 현재 스냅샷을 내려주고, 이후 서버가 step:added/snapshot/closed 이벤트를 push.
+     클라이언트는 patch/delete/add/reorder/undo/redo JSON 메시지로 편집을 발행한다. */
+  interface StudioIncomingBase {
+    type: string;
+  }
+  interface StudioPatchMsg extends StudioIncomingBase {
+    type: "patch";
+    id: string;
+    patch: Partial<Step>;
+  }
+  interface StudioDeleteMsg extends StudioIncomingBase {
+    type: "delete";
+    id: string;
+  }
+  interface StudioAddMsg extends StudioIncomingBase {
+    type: "add";
+    step: Partial<Step> & { type: Step["type"] };
+    atIndex?: number;
+  }
+  interface StudioReorderMsg extends StudioIncomingBase {
+    type: "reorder";
+    ids: string[];
+  }
+  interface StudioHistoryMsg extends StudioIncomingBase {
+    type: "undo" | "redo";
+  }
+  type StudioIncoming =
+    | StudioPatchMsg
+    | StudioDeleteMsg
+    | StudioAddMsg
+    | StudioReorderMsg
+    | StudioHistoryMsg;
+
+  function safeStudioMessage(raw: unknown): StudioIncoming | null {
+    if (typeof raw !== "object" || raw === null) return null;
+    const r = raw as Record<string, unknown>;
+    const t = r.type;
+    if (t === "patch" && typeof r.id === "string" && typeof r.patch === "object" && r.patch !== null) {
+      return { type: "patch", id: r.id, patch: r.patch as Partial<Step> };
+    }
+    if (t === "delete" && typeof r.id === "string") {
+      return { type: "delete", id: r.id };
+    }
+    if (t === "add" && typeof r.step === "object" && r.step !== null) {
+      const step = r.step as Record<string, unknown>;
+      if (typeof step.type === "string") {
+        return {
+          type: "add",
+          step: step as Partial<Step> & { type: Step["type"] },
+          atIndex: typeof r.atIndex === "number" ? r.atIndex : undefined,
+        };
+      }
+    }
+    if (t === "reorder" && Array.isArray(r.ids) && r.ids.every((x) => typeof x === "string")) {
+      return { type: "reorder", ids: r.ids as string[] };
+    }
+    if (t === "undo" || t === "redo") return { type: t };
+    return null;
+  }
+
+  fastify.get(
+    "/ws/sessions/record/:sessionId",
+    { websocket: true },
+    (socket, req) => {
+      const { sessionId } = req.params as { sessionId: string };
+      const current = getHostedSteps(sessionId);
+      if (current === null) {
+        socket.close(1008, "unknown_session");
+        return;
+      }
+
+      const send = (payload: string) => {
+        try {
+          socket.send(payload);
+        } catch {
+          /* ignore */
+        }
+      };
+
+      const unsubscribe = subscribeHosted(sessionId, send);
+      send(JSON.stringify({ type: "snapshot", steps: current }));
+
+      socket.on("message", (raw: Buffer | ArrayBuffer | string) => {
+        let text: string;
+        if (typeof raw === "string") text = raw;
+        else if (Buffer.isBuffer(raw)) text = raw.toString("utf8");
+        else text = Buffer.from(new Uint8Array(raw)).toString("utf8");
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          return;
+        }
+        const msg = safeStudioMessage(parsed);
+        if (!msg) return;
+        switch (msg.type) {
+          case "patch":
+            patchHostedStep(sessionId, msg.id, msg.patch);
+            break;
+          case "delete":
+            deleteHostedStep(sessionId, msg.id);
+            break;
+          case "add":
+            addHostedStep(sessionId, msg.step, msg.atIndex);
+            break;
+          case "reorder":
+            reorderHostedSteps(sessionId, msg.ids);
+            break;
+          case "undo":
+            undoHosted(sessionId);
+            break;
+          case "redo":
+            redoHosted(sessionId);
+            break;
+        }
+      });
+
+      socket.on("close", unsubscribe);
+    },
+  );
+
+  fastify.get("/api/sessions/record/:sessionId/steps", async (req, reply) => {
+    const { sessionId } = req.params as { sessionId: string };
+    const steps = getHostedSteps(sessionId);
+    if (steps === null) return reply.code(404).send({ error: "session_not_found" });
+    return { steps };
+  });
 
   const webIndex = path.join(webDistDir, "index.html");
   try {

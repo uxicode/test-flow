@@ -307,6 +307,32 @@ export default function App() {
     }
   }
 
+  async function handleStartSimulator(): Promise<void> {
+    if (!draft) return;
+    const ru = runUiByScenario[draft.id] ?? createDefaultRunUi();
+    const targetUrl = ru.recordUrl || draft.steps.find((s) => s.type === "goto")?.selectorValue || "http://localhost:3000";
+    try {
+      const res = await fetchJson<{ sessionId: string }>("/api/sessions/simulate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: targetUrl,
+          scenarioId: draft.id,
+          steps: draft.steps,
+        }),
+      });
+      setRecordingSessionId(res.sessionId);
+      setRecordingForScenarioId(draft.id);
+      patchRunUi(draft.id, {
+        log: `${ru.log}\n[시뮬레이터 자동 실행 디버깅] 새 창 브라우저를 오픈하여 시나리오 빌더 스텝 실시간 실행 시작 (세션: ${res.sessionId})\n`,
+      });
+    } catch (e) {
+      patchRunUi(draft.id, {
+        log: `${ru.log}\n시뮬레이터 실행 실패: ${(e as Error).message}\n`,
+      });
+    }
+  }
+
   async function handleStopRecord(): Promise<void> {
     if (!recordingSessionId) {
       setRecordingForScenarioId(null);
@@ -493,6 +519,8 @@ export default function App() {
                   updateDraft({ rawScript })
                 }
                 onRun={() => void startRun()}
+                onStartSimulator={() => void handleStartSimulator()}
+                isSimulating={recordingSessionId !== null}
                 canRun={canRun}
                 isStarting={activeRunUi.isStarting}
                 isRunning={activeRunUi.status === "running" || activeRunUi.isStarting}

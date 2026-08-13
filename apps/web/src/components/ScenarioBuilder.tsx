@@ -9,6 +9,7 @@ import {
 } from "../types";
 import { ScriptEditor } from "./ScriptEditor";
 import { StepItem } from "./StepItem";
+import { MdImportModal } from "./MdImportModal";
 
 interface Props {
   steps: Step[];
@@ -16,9 +17,12 @@ interface Props {
   rawScript: string;
   onRawScriptChange: (rawScript: string) => void;
   onRun?: () => void;
+  onStartSimulator?: () => void;
+  isSimulating?: boolean;
   canRun?: boolean;
   isStarting?: boolean;
   isRunning?: boolean;
+  activeStepId?: string | null;
 }
 
 function InsertStepDivider({
@@ -39,9 +43,8 @@ function InsertStepDivider({
     >
       {/* 라인 */}
       <div
-        className={`h-[1px] w-full transition-colors ${
-          isHovered ? "bg-sky-500/80" : "bg-transparent group-hover/divider:bg-slate-700/40"
-        }`}
+        className={`h-[1px] w-full transition-colors ${isHovered ? "bg-sky-500/80" : "bg-transparent group-hover/divider:bg-slate-700/40"
+          }`}
       />
 
       {/* 삽입 컨트롤 */}
@@ -87,12 +90,24 @@ export function ScenarioBuilder({
   rawScript,
   onRawScriptChange,
   onRun,
+  onStartSimulator,
+  isSimulating = false,
   canRun = true,
   isStarting = false,
   isRunning = false,
+  activeStepId = null,
 }: Props) {
   const [addType, setAddType] = useState<StepType>("goto");
   const [baseUrl, setBaseUrl] = useState("http://localhost:3000");
+  const [isMdImportOpen, setIsMdImportOpen] = useState(false);
+
+  function handleApplyMdSteps(newSteps: Step[], mode: "append" | "replace") {
+    if (mode === "append") {
+      onChange([...steps, ...newSteps]);
+    } else {
+      onChange(newSteps);
+    }
+  }
 
   function insertStepAt(index: number, type: StepType = addType) {
     const newStepItem = createStep(type);
@@ -179,14 +194,43 @@ export function ScenarioBuilder({
       {/* 헤더 */}
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-200">시나리오 빌더</h2>
-        <button
-          type="button"
-          onClick={loadExample}
-          className="text-xs text-slate-500 underline underline-offset-2 hover:text-slate-300 transition-colors"
-        >
-          예제 불러오기
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setIsMdImportOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-2.5 py-1 text-xs font-semibold text-sky-400 hover:bg-sky-500/20 transition-colors"
+          >
+            <span>📝 .md 텍스트로 플로우 반영</span>
+          </button>
+          <button
+            type="button"
+            onClick={loadExample}
+            className="text-xs text-slate-500 underline underline-offset-2 hover:text-slate-300 transition-colors"
+          >
+            예제 불러오기
+          </button>
+        </div>
       </div>
+
+      {/* 시뮬레이터 구동 중 바 */}
+      {isSimulating && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-purple-500/40 bg-gradient-to-r from-purple-950/80 via-slate-900 to-indigo-950/80 p-3 shadow-lg backdrop-blur-sm animate-pulse">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-sky-500"></span>
+            </span>
+            <div className="flex flex-col">
+              <span className="text-xs font-bold text-purple-200 flex items-center gap-1.5">
+                🎬 새 창 브라우저 헤디드 시뮬레이터 구동 중
+              </span>
+              <span className="text-[11px] text-sky-300 font-medium">
+                열린 Chromium 브라우저에서 시나리오 스텝별 가상 커서 이동 및 콘솔 디버깅을 실행하고 있습니다.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Base URL 설정 바 */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-2.5">
@@ -230,6 +274,7 @@ export function ScenarioBuilder({
                 index={i}
                 isFirst={i === 0}
                 isLast={i === steps.length - 1}
+                isHighlighted={activeStepId === step.id}
                 onChange={(updated) => updateStep(i, updated)}
                 onRemove={() => removeStep(i)}
                 onMoveUp={() => moveUp(i)}
@@ -273,16 +318,29 @@ export function ScenarioBuilder({
             내용 전체 삭제
           </button>
         )}
-        {onRun && (
-          <button
-            type="button"
-            onClick={onRun}
-            disabled={isRunning || !canRun}
-            className="ml-auto rounded-lg bg-sky-600 px-4 py-1.5 text-xs font-semibold text-white shadow transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isStarting ? "시작 중…" : "테스트 실행"}
-          </button>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {onStartSimulator && (
+            <button
+              type="button"
+              onClick={onStartSimulator}
+              disabled={isRunning || isSimulating || steps.length === 0}
+              className="rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 px-3.5 py-1.5 text-xs font-semibold text-white shadow-md transition-all disabled:cursor-not-allowed disabled:opacity-50 flex items-center gap-1.5"
+              title="실제 Chromium 새 창 브라우저를 오픈하여 시나리오 빌더 스텝대로 가상 포인터 및 콘솔 디버깅을 시퀀셜하게 자동 실행합니다"
+            >
+              <span>🎬 스텝 시뮬레이터 자동 실행 (새창 브라우저)</span>
+            </button>
+          )}
+          {onRun && (
+            <button
+              type="button"
+              onClick={onRun}
+              disabled={isRunning || !canRun || isSimulating}
+              className="rounded-lg bg-sky-600 px-4 py-1.5 text-xs font-semibold text-white shadow transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isStarting ? "시작 중…" : "일괄 테스트 실행"}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 스텝 개수 안내 */}
@@ -298,6 +356,13 @@ export function ScenarioBuilder({
         </h3>
         <ScriptEditor value={rawScript} onChange={onRawScriptChange} />
       </div>
+
+      <MdImportModal
+        open={isMdImportOpen}
+        onClose={() => setIsMdImportOpen(false)}
+        onApply={handleApplyMdSteps}
+        existingStepCount={steps.length}
+      />
     </section>
   );
 }

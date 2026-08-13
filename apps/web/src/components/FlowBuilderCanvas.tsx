@@ -1,18 +1,17 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
+  FileText,
   Plus,
   Trash2,
+  ZoomIn,
+  ZoomOut,
   RotateCcw,
   Sparkles,
   Code,
-  FileText,
-  MousePointer,
-  Move,
-  ArrowRight,
-  ZoomIn,
-  ZoomOut,
+  FileCode,
 } from "lucide-react";
 import { analyzeFlowToTestCases, generateMermaidFromFlow, parseMermaidToFlow, type CustomNode, type CustomEdge } from "../services/doc-tc/flowGraphAnalyzer";
+import { parseMarkdownToSteps, convertStepsToFlowNodesAndEdges } from "../services/doc-tc/mdToSteps";
 import type { GeneratedDocTestCase } from "../services/doc-tc/types";
 
 interface FlowBuilderCanvasProps {
@@ -131,8 +130,21 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
   const [nodeType, setNodeType] = useState<"input" | "default" | "output" | "decision" | "condition">("default");
   const [edgeLabel, setEdgeLabel] = useState("");
 
-  const [previewTab, setPreviewTab] = useState<"tc" | "mermaid">("tc");
+  const [previewTab, setPreviewTab] = useState<"tc" | "mermaid" | "md">("tc");
   const [localMermaid, setLocalMermaid] = useState("");
+  const [localMd, setLocalMd] = useState(`# 시나리오 플로우 예시 (마크다운 테이블 지원)
+
+| 순번 | 단계명 | 상세 내용 |
+| --- | --- | --- |
+| 1 | 페이지 이동 | http://localhost:5174/patient/whole-patient |
+| 2 | 1500ms 대기 | |
+| 3 | API 응답 검증 | GET http://localhost:5714/nipa/linked |
+| 4 | 페이지 이동 | http://localhost:5714/referral/ |
+| 5 | 1500ms 대기 | |
+| 6 | 표시 확인 | 의뢰서 상세 팝업 (.referral-confirm-popup) |
+| 7 | 1500ms 대기 | |
+| 8 | 표시 확인 | 회송서 상세 팝업 (.referral-request-popup) |
+`);
   const [mermaidType, setMermaidType] = useState<string>("graph");
   const [mermaidDir, setMermaidDir] = useState<string>("TD");
   const [excludedTcIds, setExcludedTcIds] = useState<Set<string>>(new Set());
@@ -424,6 +436,24 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
     } catch (err) {
       console.error("Mermaid parsing error:", err);
       alert("Mermaid 코드를 파싱하는 중 오류가 발생했습니다.");
+    }
+  };
+
+  const handleApplyMd = () => {
+    try {
+      const steps = parseMarkdownToSteps(localMd);
+      if (steps.length === 0) {
+        alert("유효한 마크다운 스텝을 찾을 수 없습니다.");
+        return;
+      }
+      const { nodes: newNodes, edges: newEdges } = convertStepsToFlowNodesAndEdges(steps);
+      setNodes(newNodes);
+      setEdges(newEdges);
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+    } catch (err) {
+      console.error("MD parsing error:", err);
+      alert("마크다운 텍스트를 파싱하는 중 오류가 발생했습니다.");
     }
   };
 
@@ -978,10 +1008,44 @@ export function FlowBuilderCanvas({ onTestCasesGenerated }: FlowBuilderCanvasPro
                   Mermaid
                 </span>
               </button>
+              <button
+                type="button"
+                onClick={() => setPreviewTab("md")}
+                className={`flex-1 py-2 text-center font-medium ${
+                  previewTab === "md"
+                    ? "bg-slate-900 text-sky-400 border-b-2 border-sky-500"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <span className="flex items-center justify-center gap-1">
+                  <FileCode size={11} />
+                  .md 형식
+                </span>
+              </button>
             </nav>
 
             <div className="flex-1 overflow-y-auto p-3 text-xs flex flex-col">
-              {previewTab === "mermaid" ? (
+              {previewTab === "md" ? (
+                <div className="flex flex-col gap-2 flex-grow h-full min-h-[300px]">
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    마크다운(.md) 형식 텍스트를 편집한 후 아래 반영 버튼을 누르면 플로우 차트 노드와 테스트 케이스가 동기화됩니다.
+                  </p>
+                  <textarea
+                    value={localMd}
+                    onChange={(e) => setLocalMd(e.target.value)}
+                    className="flex-grow w-full rounded border border-slate-800 bg-slate-900 p-2 text-[10px] text-slate-300 font-mono focus:border-sky-500 focus:outline-none resize-none min-h-[220px]"
+                    placeholder="# 시나리오 예시&#10;1. 페이지 이동: http://...&#10;2. 클릭: 버튼"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyMd}
+                    className="flex items-center justify-center gap-1.5 rounded bg-sky-600 hover:bg-sky-500 active:bg-sky-700 py-2 px-3 text-xs font-semibold text-white transition shadow"
+                  >
+                    <Sparkles size={13} />
+                    플로우 차트에 반영하기
+                  </button>
+                </div>
+              ) : previewTab === "mermaid" ? (
                 <div className="flex flex-col gap-2 flex-grow h-full min-h-[300px]">
                   <p className="text-[10px] text-slate-400 leading-relaxed">
                     Mermaid 코드를 편집한 후 아래 반영 버튼을 누르면 플로우 차트와 테스트 케이스가 동기화됩니다.

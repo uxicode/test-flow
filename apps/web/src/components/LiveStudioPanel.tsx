@@ -95,6 +95,9 @@ export function LiveStudioPanel({ sessionId, recordUrl, onStop }: Props) {
             return [...prev, step];
           });
         }
+      } else if ((parsed as any).type === "step:active") {
+        const activeId = (parsed as any).stepId;
+        if (activeId) setSelectedId(activeId);
       } else if (parsed.type === "closed") {
         setClosed(parsed.reason ?? "closed");
       }

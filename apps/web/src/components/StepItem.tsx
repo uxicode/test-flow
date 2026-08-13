@@ -13,6 +13,7 @@ interface Props {
   index: number;
   isFirst: boolean;
   isLast: boolean;
+  isHighlighted?: boolean;
   onChange: (updated: Step) => void;
   onRemove: () => void;
   onMoveUp: () => void;
@@ -60,6 +61,7 @@ export function StepItem({
   index,
   isFirst,
   isLast,
+  isHighlighted = false,
   onChange,
   onRemove,
   onMoveUp,
@@ -68,9 +70,21 @@ export function StepItem({
   const update = (patch: Partial<Step>) => onChange({ ...step, ...patch });
 
   return (
-    <div className="flex items-start gap-3 rounded-lg border border-slate-700/60 bg-slate-800/50 p-3 transition-colors hover:border-slate-600">
+    <div
+      className={`flex items-start gap-3 rounded-lg border p-3 transition-all duration-300 ${
+        isHighlighted
+          ? "border-sky-400 bg-sky-950/60 ring-2 ring-sky-500/50 shadow-lg shadow-sky-950/50"
+          : "border-slate-700/60 bg-slate-800/50 hover:border-slate-600"
+      }`}
+    >
       {/* 스텝 번호 */}
-      <span className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-slate-700 text-xs font-medium text-slate-300">
+      <span
+        className={`mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold transition-colors ${
+          isHighlighted
+            ? "bg-sky-500 text-slate-950 shadow"
+            : "bg-slate-700 text-slate-300"
+        }`}
+      >
         {index + 1}
       </span>
 

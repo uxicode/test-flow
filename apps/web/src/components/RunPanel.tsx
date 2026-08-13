@@ -110,13 +110,10 @@ export function RunPanel({
                   >
                     <p className="font-medium text-amber-50">테스트 실행과 녹화</p>
                     <p className="mt-1 text-xs text-amber-100/80">
-                      테스트 실행은 이 PC에 설치된 <strong>Playwright + Chromium</strong>으로
-                      동작합니다 (Docker 불필요). <strong>녹화</strong>는 Chromium 브라우저 창을
-                      띄웁니다. 종료하면 빌더에 스텝이 반영되고, 세션 폴더에{" "}
-                      <strong>영상(WebM)</strong>·<strong>steps.json</strong>·
-                      <strong>smartTc.json</strong>이 함께 저장됩니다. 실행 중에는{" "}
-                      <strong>로그</strong>, <strong>스크린샷</strong>, <strong>영상</strong>을 보고
-                      완료 후 <strong>HTML 리포트</strong>를 확인할 수 있습니다.
+                      테스트 실행은 <strong>Headed 모드(브라우저 창 노출)</strong>로
+                      실제 <strong>Chromium 브라우저 창</strong>이 뜨면서 동작 과정을 화면에
+                      보여줍니다. 실행 중에는 <strong>실시간 브라우저 동작</strong>, <strong>로그</strong>,
+                      <strong>스크린샷</strong>, <strong>영상</strong>을 확인할 수 있습니다.
                     </p>
                   </div>
                 )}
@@ -175,7 +172,7 @@ export function RunPanel({
         </div>
       </div>
 
-      {isRecording && liveSessionId ? (
+      {liveSessionId ? (
         <LiveStudioPanel
           sessionId={liveSessionId}
           recordUrl={recordUrl}
