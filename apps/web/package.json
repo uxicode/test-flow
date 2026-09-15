@@ -10,14 +10,14 @@
     "lint": "echo \"no lint\""
   },
   "dependencies": {
-    "jszip": "^3.10.1",
-    "lucide-react": "^1.23.0",
-    "mammoth": "^1.12.0",
-    "pdfjs-dist": "^5.6.205",
+    "@testflow/figma-ingest": "workspace:*",
+    "@testflow/mermaid-ir": "workspace:*",
+    "@testflow/runner-contract": "workspace:*",
+    "@testflow/shared": "workspace:*",
+    "@testflow/tc-generator": "workspace:*",
+    "mermaid": "^11.4.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "tesseract.js": "^7.0.0",
-    "xlsx": "^0.18.5"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

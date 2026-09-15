@@ -1,6 +1,9 @@
-declare module "@testflow/api" {
-  export function startServer(options?: {
-    port?: number;
-    host?: string;
-  }): Promise<void>;
+export {};
+
+declare global {
+  interface Window {
+    testflowDesktop?: {
+      isDesktop: boolean;
+    };
+  }
 }

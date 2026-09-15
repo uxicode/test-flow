@@ -1,10 +1,9 @@
 node_modules
 dist
-data
+data/**
+!data/**/.gitkeep
 *.log
 .DS_Store
 .env
 .env.local
-
-# Build artifacts
 release/
