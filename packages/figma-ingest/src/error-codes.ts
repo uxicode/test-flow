@@ -10,6 +10,10 @@ export const INGEST_ERROR = {
   figmaUnauthorized: "figma_unauthorized",
   figmaForbidden: "figma_forbidden",
   figmaRequestFailed: "figma_request_failed",
+  imageExportFailed: "image_export_failed",
+  visionUnavailable: "vision_unavailable",
+  visionFailed: "vision_failed",
+  visionEmpty: "vision_empty",
 } as const;
 
 export type IngestErrorCode =
@@ -27,6 +31,11 @@ export const INGEST_ERROR_MESSAGE: Record<IngestErrorCode, string> = {
   [INGEST_ERROR.figmaUnauthorized]: "Figma 토큰이 거부되었습니다. 토큰을 다시 저장하세요.",
   [INGEST_ERROR.figmaForbidden]: "이 Figma 파일에 접근할 권한이 없습니다.",
   [INGEST_ERROR.figmaRequestFailed]: "Figma API 요청에 실패했습니다.",
+  [INGEST_ERROR.imageExportFailed]: "Figma 노드 이미지를 내보내지 못했습니다.",
+  [INGEST_ERROR.visionUnavailable]:
+    "텍스트 레이어가 없는 이미지입니다. 로컬 Ollama(qwen2.5vl:7b)가 실행 중인지 확인하세요.",
+  [INGEST_ERROR.visionFailed]: "이미지에서 텍스트를 추출하지 못했습니다.",
+  [INGEST_ERROR.visionEmpty]: "이미지에서 화면 또는 텍스트를 찾지 못했습니다.",
 };
 
 export class IngestError extends Error {

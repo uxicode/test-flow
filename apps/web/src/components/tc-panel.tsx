@@ -8,6 +8,7 @@ import type {
 import { testCasesToMarkdown } from "@testflow/tc-generator";
 import { useEffect, useState } from "react";
 import { ApiError, deleteJson, getJson, patchJson, postJson } from "../lib/http";
+import { MANUAL_MERMAID_DUMP_ID } from "../lib/mermaid";
 
 interface MermaidListResponse {
   items: MermaidIrSummary[];
@@ -244,6 +245,7 @@ export function TcPanel({
           <option value="">Mermaid 선택</option>
           {mermaids.map((doc) => (
             <option key={doc.id} value={doc.id}>
+              {doc.dumpId === MANUAL_MERMAID_DUMP_ID ? "직접 입력 · " : ""}
               {doc.id.slice(0, 8)} · checksum {doc.checksum.slice(0, 8)}
             </option>
           ))}

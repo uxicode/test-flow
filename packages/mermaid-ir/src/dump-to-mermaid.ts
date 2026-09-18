@@ -6,8 +6,8 @@ import type { MermaidIr, MermaidNodeMapEntry } from "./types.js";
 import { validateMermaid } from "./validate-mermaid.js";
 
 function nodeLabel(name: string, text?: string): string {
-  if (text && text !== name) return `${name}: ${text}`;
-  return name;
+  if (!text || text === name || text.length > 80) return name;
+  return `${name}: ${text}`;
 }
 
 export function dumpToMermaid(dump: FigmaDump): MermaidIr {

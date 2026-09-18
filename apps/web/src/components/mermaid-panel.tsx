@@ -3,6 +3,7 @@ import type { MermaidIrSummary, StoredMermaidIr } from "@testflow/mermaid-ir";
 import mermaid from "mermaid";
 import { useEffect, useState } from "react";
 import { ApiError, deleteJson, getJson, postJson } from "../lib/http";
+import { MANUAL_MERMAID_DUMP_ID } from "../lib/mermaid";
 
 interface DumpListResponse {
   items: FigmaDumpSummary[];
@@ -23,7 +24,12 @@ function dumpOptionLabel(dump: FigmaDumpSummary): string {
   return `${dump.fileKey} / ${dump.startNodeId} · ${dump.source} · ${dump.id.slice(0, 8)}`;
 }
 
-mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+mermaid.initialize({
+  startOnLoad: false,
+  theme: "dark",
+  securityLevel: "loose",
+  flowchart: { htmlLabels: true },
+});
 
 export function MermaidPanel({
   dumpId,
@@ -35,6 +41,8 @@ export function MermaidPanel({
   const [selectedDumpId, setSelectedDumpId] = useState(dumpId ?? "");
   const [docs, setDocs] = useState<MermaidIrSummary[]>([]);
   const [current, setCurrent] = useState<StoredMermaidIr | null>(null);
+  const [sourceText, setSourceText] = useState("");
+  const [showSourceInput, setShowSourceInput] = useState(true);
   const [svg, setSvg] = useState<string>("");
   const [isWorking, setIsWorking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -111,6 +119,27 @@ export function MermaidPanel({
         dumpId: selectedDumpId,
       });
       setCurrent(stored);
+      setSourceText(stored.mermaid);
+      onMermaidSelected?.(stored.id);
+      setErrorMessage(null);
+      setErrorCode(null);
+      await refreshDocs();
+      onMermaidsChanged?.();
+    } catch (error) {
+      applyError(error);
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function handleSaveSource() {
+    setIsWorking(true);
+    try {
+      const stored = await postJson<StoredMermaidIr>("/api/mermaid", {
+        mermaid: sourceText,
+      });
+      setCurrent(stored);
+      setSourceText(stored.mermaid);
       onMermaidSelected?.(stored.id);
       setErrorMessage(null);
       setErrorCode(null);
@@ -148,6 +177,7 @@ export function MermaidPanel({
     try {
       const doc = await getJson<StoredMermaidIr>(`/api/mermaid/${id}`);
       setCurrent(doc);
+      setSourceText(doc.mermaid);
       onMermaidSelected?.(doc.id);
       setErrorMessage(null);
       setErrorCode(null);
@@ -179,7 +209,8 @@ export function MermaidPanel({
       <header className="space-y-1">
         <h2 className="text-lg font-medium text-white">2. Mermaid 변환</h2>
         <p className="text-sm text-slate-400">
-          저장된 덤프를 flowchart로 바꾸고 미리보기·복사·.mmd 저장을 할 수 있습니다.
+          저장된 덤프를 flowchart로 바꾸거나, Mermaid 코드를 직접 입력해
+          미리보기·복사·.mmd 저장을 할 수 있습니다.
         </p>
       </header>
 
@@ -205,6 +236,41 @@ export function MermaidPanel({
           Mermaid 생성
         </button>
       </div>
+
+      <button
+        type="button"
+        className="text-sm text-slate-400 underline"
+        onClick={() => setShowSourceInput((value) => !value)}
+      >
+        {showSourceInput ? "코드 직접 입력 숨기기" : "코드 직접 입력"}
+      </button>
+
+      {showSourceInput ? (
+        <div className="space-y-2">
+          <label className="block text-sm text-slate-400" htmlFor="mermaid-source">
+            Mermaid 코드
+          </label>
+          <textarea
+            id="mermaid-source"
+            className="h-40 w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100"
+            value={sourceText}
+            onChange={(event) => setSourceText(event.target.value)}
+            placeholder={'graph TD\n  start["시작"]\n  home["홈"]\n  start --> home'}
+            spellCheck={false}
+          />
+          <p className="text-xs text-slate-500">
+            {"graph/flowchart, subgraph, stadium 노드, -- \"라벨\" --> 를 지원합니다."}
+          </p>
+          <button
+            type="button"
+            className="rounded-md bg-slate-700 px-3 py-2 text-sm text-white disabled:opacity-50"
+            disabled={isWorking || !sourceText.trim()}
+            onClick={() => void handleSaveSource()}
+          >
+            Mermaid 저장
+          </button>
+        </div>
+      ) : null}
 
       {errorMessage ? (
         <p className="text-sm text-rose-300" role="alert">
@@ -238,16 +304,18 @@ export function MermaidPanel({
               dangerouslySetInnerHTML={{ __html: svg }}
             />
           ) : null}
-          <pre className="max-h-56 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-200">
-            {current.mermaid}
-          </pre>
+          {showSourceInput ? null : (
+            <pre className="max-h-56 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-200">
+              {current.mermaid}
+            </pre>
+          )}
         </div>
       ) : null}
 
       <div className="space-y-2">
         <h3 className="text-sm font-medium text-slate-200">저장된 Mermaid</h3>
         {docs.length === 0 ? (
-          <p className="text-sm text-slate-500">아직 변환한 문서가 없습니다.</p>
+          <p className="text-sm text-slate-500">아직 저장한 문서가 없습니다.</p>
         ) : null}
         <ul className="space-y-1">
           {docs.map((doc) => (
@@ -257,7 +325,10 @@ export function MermaidPanel({
                 className="min-w-0 flex-1 rounded-md border border-slate-700 px-3 py-2 text-left text-sm text-slate-200 hover:border-slate-500"
                 onClick={() => void handleOpen(doc.id)}
               >
-                {doc.id.slice(0, 8)} · 노드 {doc.nodeCount}
+                {doc.dumpId === MANUAL_MERMAID_DUMP_ID
+                  ? `직접 입력 · ${doc.id.slice(0, 8)}`
+                  : doc.id.slice(0, 8)}{" "}
+                · 노드 {doc.nodeCount}
               </button>
               <button
                 type="button"

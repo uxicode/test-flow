@@ -1,21 +1,19 @@
 import type { FastifyInstance } from "fastify";
 import {
+  DEFAULT_OLLAMA_URL,
+  DEFAULT_OLLAMA_VISION_MODEL,
   INGEST_ERROR,
   INGEST_SOURCE,
   IngestError,
   SAMPLE_CHECKOUT_DUMP,
+  fetchOllamaVisionStatus,
   type IngestErrorCode,
   ingestFromFigmaUrl,
   ingestFromUnknown,
   parseFigmaUrl,
 } from "@testflow/figma-ingest";
 import { deleteDump, getDump, listDumps, saveDump } from "./dump-store.js";
-import {
-  clearLocalFigmaToken,
-  getTokenStatus,
-  resolveFigmaToken,
-  saveLocalFigmaToken,
-} from "./figma-token.js";
+import { getTokenStatus, resolveFigmaToken } from "./figma-token.js";
 
 function statusFor(code: IngestErrorCode): number {
   if (code === INGEST_ERROR.missingToken || code === INGEST_ERROR.figmaUnauthorized)
@@ -23,7 +21,19 @@ function statusFor(code: IngestErrorCode): number {
   if (code === INGEST_ERROR.figmaForbidden) return 403;
   if (code === INGEST_ERROR.nodeNotFound) return 404;
   if (code === INGEST_ERROR.figmaRequestFailed) return 502;
+  if (code === INGEST_ERROR.imageExportFailed) return 502;
+  if (code === INGEST_ERROR.visionUnavailable) return 503;
+  if (code === INGEST_ERROR.visionFailed || code === INGEST_ERROR.visionEmpty)
+    return 422;
   return 400;
+}
+
+function visionConfig() {
+  return {
+    enabled: process.env.OLLAMA_VISION !== "0",
+    ollamaUrl: process.env.OLLAMA_BASE_URL || DEFAULT_OLLAMA_URL,
+    ollamaModel: process.env.OLLAMA_VISION_MODEL || DEFAULT_OLLAMA_VISION_MODEL,
+  };
 }
 
 function sendIngestError(
@@ -41,18 +51,15 @@ function sendIngestError(
 export async function registerFigmaRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/settings/figma", async () => getTokenStatus());
 
-  app.put("/api/settings/figma-token", async (req, reply) => {
-    const body = req.body as { token?: unknown };
-    try {
-      if (typeof body.token !== "string")
-        throw new IngestError(INGEST_ERROR.missingToken);
-      return await saveLocalFigmaToken(body.token);
-    } catch (error) {
-      return sendIngestError(reply, error);
-    }
+  app.get("/api/settings/vision", async () => {
+    const config = visionConfig();
+    const status = await fetchOllamaVisionStatus({ ollamaUrl: config.ollamaUrl });
+    return {
+      ...status,
+      enabled: config.enabled,
+      model: config.ollamaModel,
+    };
   });
-
-  app.delete("/api/settings/figma-token", async () => clearLocalFigmaToken());
 
   app.post("/api/figma-dumps/parse-url", async (req, reply) => {
     const body = req.body as { url?: unknown };
@@ -66,12 +73,17 @@ export async function registerFigmaRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/api/figma-dumps/from-url", async (req, reply) => {
-    const body = req.body as { url?: unknown };
+    const body = req.body as { url?: unknown; token?: unknown };
     try {
       if (typeof body.url !== "string")
         throw new IngestError(INGEST_ERROR.invalidUrl);
-      const { token } = await resolveFigmaToken();
-      const dump = await ingestFromFigmaUrl({ url: body.url, token });
+      const requestToken = typeof body.token === "string" ? body.token : undefined;
+      const { token } = resolveFigmaToken(requestToken);
+      const dump = await ingestFromFigmaUrl({
+        url: body.url,
+        token,
+        vision: visionConfig(),
+      });
       const stored = await saveDump(dump, INGEST_SOURCE.figmaRest);
       return reply.code(201).send(stored);
     } catch (error) {

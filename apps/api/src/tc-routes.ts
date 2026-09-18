@@ -16,6 +16,7 @@ import {
   validateCases,
   type TestCase,
 } from "@testflow/tc-generator";
+import { mermaidToDump, MermaidError } from "@testflow/mermaid-ir";
 import { getDump } from "./dump-store.js";
 import { getMermaid } from "./mermaid-store.js";
 import {
@@ -130,11 +131,12 @@ export async function registerTcRoutes(app: FastifyInstance): Promise<void> {
       return reply
         .code(400)
         .send({ error: TC_ERROR.emptyMermaid, message: "Mermaid가 비어 있어 TC를 만들 수 없습니다." });
-    const dump = await getDump(mermaid.dumpId);
-    if (!dump) return reply.code(404).send({ error: "dump_not_found" });
+    const storedDump = await getDump(mermaid.dumpId);
     try {
+      const dump = storedDump ?? mermaidToDump(mermaid);
       const cases = generateTestCases(dump, mermaid.nodeMap);
       const documentId = tcDocumentId(dump.fileKey, dump.startNodeId);
+      const dumpId = storedDump?.id ?? mermaid.id;
       const existing = await getTcDocument(documentId);
       const next = existing
         ? addGeneratedVersion(
@@ -142,14 +144,14 @@ export async function registerTcRoutes(app: FastifyInstance): Promise<void> {
             cases,
             mermaid.checksum,
             mermaid.id,
-            dump.id,
+            dumpId,
           )
         : createDocument({
             documentId,
             figmaFileKey: dump.fileKey,
             figmaStartNodeId: dump.startNodeId,
             mermaidId: mermaid.id,
-            dumpId: dump.id,
+            dumpId,
             mermaidChecksum: mermaid.checksum,
             cases,
           });
@@ -159,6 +161,8 @@ export async function registerTcRoutes(app: FastifyInstance): Promise<void> {
         head: headVersion(next),
       });
     } catch (error) {
+      if (error instanceof MermaidError)
+        return reply.code(400).send({ error: error.code, message: error.message });
       return sendTcError(reply, error);
     }
   });

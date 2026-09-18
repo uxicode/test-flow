@@ -1,25 +1,32 @@
-import type {
-  FigmaDump,
-  FigmaDumpSummary,
-  StoredFigmaDump,
+import {
+  DUMP_ANALYSIS_METHOD,
+  type FigmaDump,
+  type FigmaDumpSummary,
+  type StoredFigmaDump,
 } from "@testflow/figma-ingest";
 import { useEffect, useState, type ChangeEvent } from "react";
 import {
-  ApiError,
-  deleteJson,
-  getJson,
-  postJson,
-  putJson,
-} from "../lib/http";
+  clearSessionFigmaToken,
+  getSessionTokenStatus,
+  mergeTokenStatus,
+  readSessionFigmaToken,
+  saveSessionFigmaToken,
+  TOKEN_SOURCE,
+  type TokenStatus,
+} from "../lib/figma-token";
+import { ApiError, deleteJson, getJson, postJson } from "../lib/http";
 
 interface DumpListResponse {
   items: FigmaDumpSummary[];
 }
 
-interface TokenStatus {
-  configured: boolean;
-  source: "env" | "local" | null;
-  hint: string | null;
+interface VisionStatus {
+  enabled: boolean;
+  connected: boolean;
+  url: string;
+  model: string;
+  hasVisionModel: boolean;
+  recommendedModel: string;
 }
 
 interface IngestPanelProps {
@@ -31,6 +38,8 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
   const [figmaUrl, setFigmaUrl] = useState("");
   const [tokenInput, setTokenInput] = useState("");
   const [tokenStatus, setTokenStatus] = useState<TokenStatus | null>(null);
+  const [hasSessionToken, setHasSessionToken] = useState(false);
+  const [visionStatus, setVisionStatus] = useState<VisionStatus | null>(null);
   const [jsonText, setJsonText] = useState("");
   const [showJsonFallback, setShowJsonFallback] = useState(false);
   const [items, setItems] = useState<FigmaDumpSummary[]>([]);
@@ -63,22 +72,28 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
   }
 
   async function refreshTokenStatus() {
-    const status = await getJson<TokenStatus>("/api/settings/figma");
-    setTokenStatus(status);
+    const envStatus = await getJson<TokenStatus>("/api/settings/figma");
+    const sessionStatus = getSessionTokenStatus();
+    setHasSessionToken(sessionStatus.configured);
+    setTokenStatus(mergeTokenStatus(envStatus, sessionStatus));
+  }
+
+  async function refreshVisionStatus() {
+    const status = await getJson<VisionStatus>("/api/settings/vision");
+    setVisionStatus(status);
   }
 
   useEffect(() => {
     void refreshList();
     void refreshTokenStatus().catch(applyError);
+    void refreshVisionStatus().catch(applyError);
   }, []);
 
   async function handleSaveToken() {
     setIsWorking(true);
     try {
-      const status = await putJson<TokenStatus>("/api/settings/figma-token", {
-        token: tokenInput,
-      });
-      setTokenStatus(status);
+      saveSessionFigmaToken(tokenInput);
+      await refreshTokenStatus();
       setTokenInput("");
       setErrorMessage(null);
       setErrorCode(null);
@@ -92,8 +107,8 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
   async function handleClearToken() {
     setIsWorking(true);
     try {
-      const status = await deleteJson<TokenStatus>("/api/settings/figma-token");
-      setTokenStatus(status);
+      clearSessionFigmaToken();
+      await refreshTokenStatus();
       setErrorMessage(null);
       setErrorCode(null);
     } catch (error) {
@@ -108,6 +123,7 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
     try {
       const stored = await postJson<StoredFigmaDump>("/api/figma-dumps/from-url", {
         url: figmaUrl,
+        token: readSessionFigmaToken() ?? undefined,
       });
       setSelected(stored);
       onDumpSelected?.(stored.id);
@@ -208,10 +224,10 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
   }
 
   const sourceLabel =
-    tokenStatus?.source === "env"
+    tokenStatus?.source === TOKEN_SOURCE.env
       ? "환경변수"
-      : tokenStatus?.source === "local"
-        ? "로컬 설정"
+      : tokenStatus?.source === TOKEN_SOURCE.session
+        ? "세션"
         : null;
 
   return (
@@ -219,8 +235,9 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
       <header className="space-y-1">
         <h2 className="text-lg font-medium text-white">1. Figma에서 플로우 가져오기</h2>
         <p className="text-sm text-slate-400">
-          URL을 넣으면 서버가 Figma API로 덤프를 만듭니다. 토큰은 API/로컬 설정에만
-          저장되며 웹 번들에 들어가지 않습니다.
+          URL을 넣으면 서버가 Figma API로 덤프를 만듭니다. 토큰은 이 탭의 세션
+          스토리지에만 저장되며 탭을 닫으면 사라집니다. 텍스트 레이어가 없는 한
+          장짜리 이미지는 로컬 Ollama(qwen2.5vl:7b)로 화면 텍스트를 추출합니다.
         </p>
       </header>
 
@@ -236,9 +253,9 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
             <span className="text-amber-300">없음 — FIGMA_ACCESS_TOKEN 또는 아래에 저장</span>
           )}
         </p>
-        {tokenStatus?.source === "env" ? (
+        {tokenStatus?.source === TOKEN_SOURCE.env ? (
           <p className="text-xs text-slate-500">
-            환경변수가 있으면 로컬에 저장한 토큰보다 우선합니다.
+            환경변수가 있으면 세션에 저장한 토큰보다 우선합니다.
           </p>
         ) : null}
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -261,13 +278,35 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
           <button
             type="button"
             className="rounded-md border border-slate-500 px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
-            disabled={isWorking || tokenStatus?.source !== "local"}
+            disabled={isWorking || !hasSessionToken}
             onClick={() => void handleClearToken()}
           >
-            로컬 토큰 삭제
+            세션 토큰 삭제
           </button>
         </div>
       </div>
+
+      {visionStatus ? (
+        <p className="text-xs text-slate-500">
+          이미지 분석:{" "}
+          {!visionStatus.enabled ? (
+            <span>꺼짐 (OLLAMA_VISION=0)</span>
+          ) : visionStatus.connected && visionStatus.hasVisionModel ? (
+            <span className="text-emerald-300">
+              Ollama 연결됨 ({visionStatus.model})
+            </span>
+          ) : visionStatus.connected ? (
+            <span className="text-amber-300">
+              Ollama는 켜져 있으나 비전 모델이 없습니다. `ollama pull{" "}
+              {visionStatus.recommendedModel}`
+            </span>
+          ) : (
+            <span className="text-amber-300">
+              Ollama 없음 — {visionStatus.url} 에서 qwen2.5vl:7b 를 실행하세요
+            </span>
+          )}
+        </p>
+      ) : null}
 
       <div className="space-y-2">
         <label className="block text-sm text-slate-400" htmlFor="figma-url">
@@ -380,10 +419,24 @@ export function IngestPanel({ onDumpSelected, onDumpsChanged }: IngestPanelProps
       {selected ? (
         <div className="rounded-md border border-slate-700 p-3 text-sm text-slate-300">
           <p className="mb-2 text-slate-100">선택됨: {selected.id}</p>
+          {selected.analysis?.method === DUMP_ANALYSIS_METHOD.vision ? (
+            <p className="mb-2 text-xs text-emerald-300">
+              이미지 분석으로 워크플로우 추출 · 노드 {selected.nodes.length} ·
+              연결 {selected.connections.length}
+              {selected.analysis.model ? ` (${selected.analysis.model})` : ""}
+            </p>
+          ) : null}
           <ul className="max-h-40 list-disc overflow-auto pl-5">
             {selected.nodes.map((node) => (
               <li key={node.id}>
                 {node.name} ({node.id})
+                {node.text ? (
+                  <span className="block text-xs text-slate-400">
+                    {node.text.length > 120
+                      ? `${node.text.slice(0, 120)}…`
+                      : node.text}
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>

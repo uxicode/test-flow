@@ -8,10 +8,23 @@ export interface FigmaNodesResponse {
   nodes?: Record<string, { document?: FigmaApiNode } | null>;
 }
 
+export interface FetchInitLike {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
+export interface FetchResponseLike {
+  status: number;
+  json: () => Promise<unknown>;
+  arrayBuffer?: () => Promise<ArrayBuffer>;
+}
+
 export type FetchLike = (
   url: string,
-  init?: { headers?: Record<string, string> },
-) => Promise<{ status: number; json: () => Promise<unknown> }>;
+  init?: FetchInitLike,
+) => Promise<FetchResponseLike>;
 
 function authHeaders(token: string): Record<string, string> {
   return { "X-Figma-Token": token };
@@ -83,4 +96,47 @@ export async function fetchFlowRoots(options: {
   }
 
   return [...known.values()];
+}
+
+export interface FigmaImagesResponse {
+  err?: string | null;
+  images?: Record<string, string | null>;
+}
+
+export async function fetchFigmaNodeImage(options: {
+  fileKey: string;
+  nodeId: string;
+  token: string;
+  fetchImpl?: FetchLike;
+  scale?: number;
+}): Promise<string> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const scale = options.scale ?? 2;
+  const ids = encodeURIComponent(options.nodeId);
+  const url = `https://api.figma.com/v1/images/${encodeURIComponent(options.fileKey)}?ids=${ids}&format=png&scale=${scale}`;
+  const response = await fetchImpl(url, { headers: authHeaders(options.token) });
+  throwForStatus(response.status);
+
+  const body = (await response.json()) as FigmaImagesResponse;
+  if (body.err) throw new IngestError(INGEST_ERROR.imageExportFailed, body.err);
+
+  const imageUrl =
+    body.images?.[options.nodeId] ??
+    body.images?.[options.nodeId.replace(/-/g, ":")];
+  if (!imageUrl)
+    throw new IngestError(INGEST_ERROR.imageExportFailed, options.nodeId);
+
+  const imageResponse = await fetchImpl(imageUrl);
+  if (imageResponse.status >= 400)
+    throw new IngestError(
+      INGEST_ERROR.imageExportFailed,
+      `HTTP ${imageResponse.status}`,
+    );
+  if (!imageResponse.arrayBuffer)
+    throw new IngestError(INGEST_ERROR.imageExportFailed, "arrayBuffer 없음");
+
+  const bytes = Buffer.from(await imageResponse.arrayBuffer());
+  if (bytes.byteLength === 0)
+    throw new IngestError(INGEST_ERROR.imageExportFailed, "빈 이미지");
+  return bytes.toString("base64");
 }

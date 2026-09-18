@@ -11,6 +11,7 @@ export interface FigmaFlowNode {
   name: string;
   type?: string;
   text?: string;
+  group?: string;
 }
 
 export interface FigmaFlowConnection {
@@ -19,11 +20,25 @@ export interface FigmaFlowConnection {
   label?: string;
 }
 
+export const DUMP_ANALYSIS_METHOD = {
+  figmaText: "figma-text",
+  vision: "vision",
+} as const;
+
+export type DumpAnalysisMethod =
+  (typeof DUMP_ANALYSIS_METHOD)[keyof typeof DUMP_ANALYSIS_METHOD];
+
+export interface DumpAnalysis {
+  method: DumpAnalysisMethod;
+  model?: string;
+}
+
 export interface FigmaDump {
   fileKey: string;
   startNodeId: string;
   nodes: FigmaFlowNode[];
   connections: FigmaFlowConnection[];
+  analysis?: DumpAnalysis;
 }
 
 export interface StoredFigmaDump extends FigmaDump {

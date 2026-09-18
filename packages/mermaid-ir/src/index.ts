@@ -6,8 +6,14 @@ export {
   MermaidError,
   type MermaidErrorCode,
 } from "./error-codes.js";
-export { escapeMermaidLabel, toMermaidId } from "./ids.js";
-export { validateMermaid } from "./validate-mermaid.js";
+export { escapeMermaidLabel, toMermaidId, unescapeMermaidLabel } from "./ids.js";
+export {
+  mermaidFromSource,
+  mermaidToDump,
+} from "./source-to-mermaid.js";
+export { parseMermaidGraph, validateMermaid } from "./validate-mermaid.js";
+export type { ParsedMermaidEdge, ParsedMermaidGraph, ParsedMermaidNode } from "./validate-mermaid.js";
+export { MANUAL_MERMAID_DUMP_ID } from "./types.js";
 export type {
   MermaidIr,
   MermaidIrSummary,

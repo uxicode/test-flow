@@ -1,3 +1,5 @@
+export const MANUAL_MERMAID_DUMP_ID = "manual";
+
 export interface MermaidNodeMapEntry {
   mermaidId: string;
   figmaNodeId: string;

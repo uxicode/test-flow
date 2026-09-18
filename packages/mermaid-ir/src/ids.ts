@@ -13,3 +13,7 @@ export function escapeMermaidLabel(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+export function unescapeMermaidLabel(text: string): string {
+  return text.replace(/#quot;/g, '"').replace(/\\\\/g, "\\");
+}

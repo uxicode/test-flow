@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { dumpToMermaid, MermaidError } from "@testflow/mermaid-ir";
+import { dumpToMermaid, mermaidFromSource, MANUAL_MERMAID_DUMP_ID, MermaidError } from "@testflow/mermaid-ir";
 import { getDump } from "./dump-store.js";
 import { deleteMermaid, getMermaid, listMermaid, saveMermaid } from "./mermaid-store.js";
 
@@ -41,9 +41,22 @@ export async function registerMermaidRoutes(app: FastifyInstance): Promise<void>
   });
 
   app.post("/api/mermaid", async (req, reply) => {
-    const body = req.body as { dumpId?: unknown };
+    const body = req.body as { dumpId?: unknown; mermaid?: unknown };
+    if (typeof body.mermaid === "string") {
+      try {
+        const startedAt = Date.now();
+        const ir = mermaidFromSource(body.mermaid);
+        const stored = await saveMermaid(MANUAL_MERMAID_DUMP_ID, ir);
+        req.log.info({ elapsedMs: Date.now() - startedAt, mermaidId: stored.id }, "mermaid saved");
+        return reply.code(201).send(stored);
+      } catch (error) {
+        return sendMermaidError(reply, error);
+      }
+    }
     if (typeof body.dumpId !== "string" || !body.dumpId)
-      return reply.code(400).send({ error: "invalid_schema", message: "dumpId가 필요합니다." });
+      return reply
+        .code(400)
+        .send({ error: "invalid_schema", message: "dumpId 또는 mermaid가 필요합니다." });
     const dump = await getDump(body.dumpId);
     if (!dump) return reply.code(404).send({ error: "dump_not_found" });
     try {

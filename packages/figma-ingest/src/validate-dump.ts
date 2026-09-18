@@ -1,5 +1,11 @@
 import { INGEST_ERROR, IngestError } from "./error-codes.js";
-import type { FigmaDump, FigmaFlowConnection, FigmaFlowNode } from "./types.js";
+import {
+  DUMP_ANALYSIS_METHOD,
+  type DumpAnalysis,
+  type FigmaDump,
+  type FigmaFlowConnection,
+  type FigmaFlowNode,
+} from "./types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -15,6 +21,20 @@ function parseNode(value: unknown): FigmaFlowNode {
     name: value.name,
     type: typeof value.type === "string" ? value.type : undefined,
     text: typeof value.text === "string" ? value.text : undefined,
+    group: typeof value.group === "string" ? value.group : undefined,
+  };
+}
+
+function parseAnalysis(value: unknown): DumpAnalysis | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    value.method !== DUMP_ANALYSIS_METHOD.vision &&
+    value.method !== DUMP_ANALYSIS_METHOD.figmaText
+  )
+    return undefined;
+  return {
+    method: value.method,
+    model: typeof value.model === "string" ? value.model : undefined,
   };
 }
 
@@ -69,5 +89,6 @@ export function validateDump(input: unknown): FigmaDump {
     startNodeId: input.startNodeId,
     nodes,
     connections,
+    analysis: parseAnalysis(input.analysis),
   };
 }

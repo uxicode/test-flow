@@ -16,6 +16,27 @@ describe("dumpToMermaid", () => {
     validateMermaid(ir.mermaid);
   });
 
+  it("비전 워크플로우 덤프를 flowchart로 만든다", () => {
+    const ir = dumpToMermaid({
+      fileKey: "file",
+      startNodeId: "1:1",
+      nodes: [
+        { id: "1:1", name: "로그인 프로세스" },
+        { id: "s2", name: "로그인 화면 진입" },
+        { id: "s3", name: "이메일 입력" },
+        { id: "s4", name: "존재하지 않음" },
+      ],
+      connections: [
+        { from: "1:1", to: "s2" },
+        { from: "s2", to: "s3" },
+        { from: "s2", to: "s4", label: "실패" },
+      ],
+    });
+    assert.match(ir.mermaid, /로그인 화면 진입/);
+    assert.match(ir.mermaid, /-->\|실패\|/);
+    validateMermaid(ir.mermaid);
+  });
+
   it("빈 덤프는 empty_dump", () => {
     assert.throws(
       () =>
