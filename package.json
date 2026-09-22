@@ -2,13 +2,10 @@
   "name": "testflow",
   "private": true,
   "scripts": {
-    "dev": "pnpm --filter @testflow/shared --filter @testflow/runner-contract --filter @testflow/figma-ingest --filter @testflow/mermaid-ir --filter @testflow/tc-generator --filter @testflow/playwright-runner build && pnpm --parallel --filter @testflow/api --filter @testflow/web dev",
-    "build": "pnpm --filter @testflow/shared --filter @testflow/runner-contract --filter @testflow/figma-ingest --filter @testflow/mermaid-ir --filter @testflow/tc-generator --filter @testflow/playwright-runner build && pnpm -r build",
-    "test": "pnpm --filter @testflow/figma-ingest --filter @testflow/mermaid-ir --filter @testflow/tc-generator --filter @testflow/playwright-runner test",
-    "lint": "pnpm -r lint",
-    "electron:dev": "pnpm --filter @testflow/shared --filter @testflow/runner-contract --filter @testflow/figma-ingest --filter @testflow/mermaid-ir --filter @testflow/tc-generator --filter @testflow/playwright-runner build && pnpm --filter @testflow/web build && pnpm --filter @testflow/api build && pnpm --filter @testflow/desktop dev",
-    "electron:pack": "pnpm --filter @testflow/shared --filter @testflow/runner-contract --filter @testflow/figma-ingest --filter @testflow/mermaid-ir --filter @testflow/tc-generator --filter @testflow/playwright-runner build && pnpm --filter @testflow/web build && pnpm --filter @testflow/api build && pnpm --filter @testflow/desktop build && pnpm --filter @testflow/desktop pack",
-    "electron:build": "pnpm --filter @testflow/shared --filter @testflow/runner-contract --filter @testflow/figma-ingest --filter @testflow/mermaid-ir --filter @testflow/tc-generator --filter @testflow/playwright-runner build && pnpm --filter @testflow/web build && pnpm --filter @testflow/api build && pnpm --filter @testflow/desktop build && pnpm --filter @testflow/desktop dist"
+    "dev": "pnpm --parallel --filter @testflow/api --filter @testflow/web dev",
+    "build": "pnpm -r --filter @testflow/figma --filter @testflow/analyze --filter @testflow/tc --filter @testflow/runner --filter @testflow/api --filter @testflow/web build",
+    "test": "pnpm --filter @testflow/figma --filter @testflow/analyze --filter @testflow/tc --filter @testflow/runner --filter @testflow/api test",
+    "lint": "pnpm -r lint"
   },
   "engines": {
     "node": ">=20"
