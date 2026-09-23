@@ -67,7 +67,6 @@ export function App() {
   const [values, setValues] = useState<Record<string, Record<string, string>>>({});
   const [runIds, setRunIds] = useState<Record<string, string>>({});
   const [caseState, setCaseState] = useState<Record<string, string>>({});
-  const [reports, setReports] = useState<Record<string, string>>({});
   const [errorMessage, setErrorMessage] = useState("");
   const [isWorking, setIsWorking] = useState(false);
   const [editingInputKey, setEditingInputKey] = useState("");
@@ -125,9 +124,6 @@ export function App() {
           .then((run) => {
             const label = statusLabel(run.status);
             setCaseState((current) => (current[caseId] === label ? current : { ...current, [caseId]: label }));
-            if (run.report) {
-              setReports((current) => (current[caseId] === run.report ? current : { ...current, [caseId]: run.report }));
-            }
           })
           .catch(() => undefined);
       }
@@ -141,7 +137,6 @@ export function App() {
     const runStatus = event.runStatus;
     if (!caseId || !runStatus) return;
     setCaseState((current) => ({ ...current, [caseId]: statusLabel(runStatus) }));
-    if (event.report) setReports((current) => ({ ...current, [caseId]: event.report ?? "" }));
   }
 
   function watch(channelId: string) {
@@ -198,7 +193,6 @@ export function App() {
     if (!jobId) return;
     setErrorMessage("");
     setCaseState((current) => ({ ...current, [testCase.id]: "진행 중" }));
-    setReports((current) => ({ ...current, [testCase.id]: "실행을 시작하는 중" }));
     try {
       const created = await postJson<{ runId: string }>("/api/runs", {
         jobId,
@@ -212,7 +206,6 @@ export function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "실행에 실패했습니다.";
       setCaseState((current) => ({ ...current, [testCase.id]: "실패" }));
-      setReports((current) => ({ ...current, [testCase.id]: message }));
       setErrorMessage(message);
     }
   }
@@ -226,6 +219,15 @@ export function App() {
   const successCount = cases.filter((item) => item.kind === "success").length;
   const failureCount = cases.filter((item) => item.kind === "failure").length;
   const documentValues = Object.fromEntries(cases.map((testCase) => [testCase.id, mergedValues(testCase)]));
+
+  function inputLine(testCase: TestCase, input: TestCase["inputs"][number]): string {
+    if (testCase.kind === "failure") return input.value || "없음";
+    const typed = documentValues[testCase.id]?.[input.target]?.trim() ?? "";
+    if (ACCOUNT_PASSWORD.test(input.target)) return typed ? "입력됨" : "상단 공통 입력";
+    if (typed) return typed;
+    if (isAccountField(input.target)) return "상단 공통 입력";
+    return "실행 시 입력";
+  }
 
   return (
     <main className="mx-auto w-full max-w-[1600px] space-y-4 bg-slate-950 px-4 py-8 text-slate-100">
@@ -361,12 +363,38 @@ export function App() {
                   {caseState[testCase.id] ?? "대기"}
                 </span>
               </p>
-              <p className="text-xs text-slate-500">기대: {testCase.expectedText}</p>
-              {reports[testCase.id] ? (
-                <pre className="whitespace-pre-wrap rounded-md bg-slate-950 p-2 text-xs text-slate-300">
-                  {reports[testCase.id]}
-                </pre>
-              ) : null}
+              <dl className="space-y-1 text-xs text-slate-300">
+                <div>
+                  <dt className="inline text-slate-500">화면 </dt>
+                  <dd className="inline">{testCase.screenName}</dd>
+                </div>
+                {testCase.buttonName ? (
+                  <div>
+                    <dt className="inline text-slate-500">버튼 </dt>
+                    <dd className="inline">{testCase.buttonName}</dd>
+                  </div>
+                ) : null}
+                <div>
+                  <dt className="text-slate-500">입력</dt>
+                  <dd>
+                    {testCase.inputs.length === 0 ? (
+                      <span className="text-slate-500">없음</span>
+                    ) : (
+                      <ul>
+                        {testCase.inputs.map((input) => (
+                          <li key={input.target}>
+                            {input.target}: {inputLine(testCase, input)}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">기대 결과</dt>
+                  <dd className="whitespace-pre-wrap">{testCase.expectedText}</dd>
+                </div>
+              </dl>
               {testCase.kind === "success"
                 ? testCase.inputs.filter((input) => !isAccountField(input.target)).map((input) => (
                     <label key={input.target} className="block space-y-1 text-xs text-slate-400">
@@ -396,11 +424,7 @@ export function App() {
                       />
                     </label>
                   ))
-                : (
-                    <p className="text-xs text-slate-400">
-                      조건 밖 값: {testCase.inputs.map((input) => `${input.target}=${input.value}`).join(", ")}
-                    </p>
-                  )}
+                : null}
               <button
                 type="button"
                 className="rounded-md bg-sky-800 px-3 py-2 text-sm"
