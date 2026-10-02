@@ -1,5 +1,6 @@
 import { casesToMarkdown, casesToXlsx } from "@testflow/tc/export";
 import { useMemo, useState, type ReactNode } from "react";
+import { ActionButton } from "./action-button";
 import type { TestCase } from "../lib/api";
 
 interface TcDocumentProps {
@@ -100,19 +101,12 @@ export function TcDocument({ cases, values }: TcDocumentProps) {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          className="rounded-md border border-slate-600 px-3 py-2 text-sm"
+        <ActionButton
+          label={isPreviewOpen ? "미리보기 닫기" : "마크다운 미리보기"}
           onClick={() => setIsPreviewOpen((open) => !open)}
-        >
-          {isPreviewOpen ? "미리보기 닫기" : "마크다운 미리보기"}
-        </button>
-        <button type="button" className="rounded-md bg-slate-700 px-3 py-2 text-sm" onClick={saveMarkdown}>
-          마크다운 다운로드
-        </button>
-        <button type="button" className="rounded-md bg-slate-700 px-3 py-2 text-sm" onClick={saveExcel}>
-          엑셀 다운로드
-        </button>
+        />
+        <ActionButton label="마크다운 다운로드" variant="muted" onClick={saveMarkdown} />
+        <ActionButton label="엑셀 다운로드" variant="muted" onClick={saveExcel} />
       </div>
       {isPreviewOpen ? (
         <article className="rounded-md bg-white px-6 py-5 text-slate-900">{renderMarkdown(markdown)}</article>

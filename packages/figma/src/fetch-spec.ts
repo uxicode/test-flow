@@ -5,6 +5,7 @@ export interface FetchLike {
   (url: string, init?: { headers?: Record<string, string> }): Promise<{
     status: number;
     json: () => Promise<unknown>;
+    arrayBuffer?: () => Promise<ArrayBuffer>;
   }>;
 }
 

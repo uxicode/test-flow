@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { collectTextLines } from "./figma-node.js";
+import { fetchSpecImage } from "./fetch-image.js";
 import { parseFigmaUrl } from "./parse-figma-url.js";
 import { readFeatureRows, segmentScreens } from "./segment-screens.js";
 
@@ -51,3 +52,64 @@ describe("collectTextLines", () => {
     assert.deepEqual(lines, ["화면 ID"]);
   });
 });
+
+describe("fetchSpecImage", () => {
+  it("Figma 이미지 URL을 base64로 받는다", async () => {
+    const png = new Uint8Array([137, 80, 78, 71]).buffer;
+    const encoded = await fetchSpecImage({
+      url: "https://www.figma.com/design/Abcdefghijklmnopqr12/Spec?node-id=1-2",
+      token: "token",
+      fetchImpl: async (url) => {
+        if (url.includes("/images/")) {
+          return {
+            status: 200,
+            json: async () => ({ images: { "1:2": "https://img.example/shot.png" } }),
+          };
+        }
+        return {
+          status: 200,
+          json: async () => ({}),
+          arrayBuffer: async () => png,
+        };
+      },
+    });
+    assert.equal(encoded, Buffer.from(png).toString("base64"));
+  });
+
+  it("긴 변을 넘으면 더 작은 scale로 다시 받는다", async () => {
+    const scales: string[] = [];
+    const large = pngHeader(4000, 2000);
+    const small = pngHeader(1024, 512);
+    const encoded = await fetchSpecImage({
+      url: "https://www.figma.com/design/Abcdefghijklmnopqr12/Spec?node-id=1-2",
+      token: "token",
+      maxSide: 1024,
+      fetchImpl: async (url) => {
+        if (url.includes("/images/")) {
+          const scale = new URL(url).searchParams.get("scale") ?? "";
+          scales.push(scale);
+          return {
+            status: 200,
+            json: async () => ({ images: { "1:2": `https://img.example/${scale}.png` } }),
+          };
+        }
+        return {
+          status: 200,
+          json: async () => ({}),
+          arrayBuffer: async () => (url.includes("/0.256.png") ? small : large),
+        };
+      },
+    });
+    assert.deepEqual(scales, ["1", "0.256"]);
+    assert.equal(encoded, Buffer.from(small).toString("base64"));
+  });
+});
+
+function pngHeader(width: number, height: number): ArrayBuffer {
+  const buffer = Buffer.alloc(24);
+  buffer[0] = 0x89;
+  buffer.write("PNG", 1);
+  buffer.writeUInt32BE(width, 16);
+  buffer.writeUInt32BE(height, 20);
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+}

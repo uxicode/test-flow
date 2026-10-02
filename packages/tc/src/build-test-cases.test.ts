@@ -28,6 +28,27 @@ describe("buildTestCases", () => {
     assert.equal(cases[1]?.expectedText, "올바른 이메일 형식을 입력해주세요.");
   });
 
+  it("필수 입력 경고는 칸 이름을 값으로 넣지 않고 비운다", () => {
+    const cases = buildTestCases([
+      {
+        screenKey: "screen-1",
+        screenName: "관리자 사용자 현황",
+        inputs: [
+          {
+            target: "이름",
+            constraint: "필수",
+            warning: "이름을 입력해주세요.",
+            failureExample: "이름",
+          },
+        ],
+        successText: "",
+        buttonName: "조회",
+      },
+    ]);
+    assert.equal(cases[0]?.kind, "failure");
+    assert.equal(cases[0]?.inputs[0]?.value, "");
+  });
+
   it("성공 경로는 이메일 다음 비밀번호만 한 번씩 묻는다", () => {
     const cases = buildTestCases([
       {
@@ -88,6 +109,61 @@ describe("buildTestCases", () => {
     assert.equal(cases[0]?.expectedText, "오늘");
     assert.equal(cases[0]?.buttonName, "");
     assert.deepEqual(cases[0]?.inputs, []);
+  });
+
+  it("조회 화면은 기획 기능 행마다 TC를 나누고 입력 칸을 한꺼번에 묶지 않는다", () => {
+    const cases = buildTestCases([
+      {
+        screenKey: "screen-1",
+        screenName: "관리자 사용자 현황",
+        inputs: [
+          { target: "이름", constraint: "", warning: "", failureExample: "" },
+          { target: "성별", constraint: "", warning: "", failureExample: "" },
+          { target: "검색어", constraint: "", warning: "", failureExample: "" },
+          { target: "이름", constraint: "", warning: "", failureExample: "" },
+        ],
+        successText: "사용자 목록 조회",
+        buttonName: "조회",
+        features: [
+          { title: "이름", body: "이름으로 조회에 성공하면 목록이 바뀐다" },
+          { title: "성별", body: "성별을 선택하면 목록이 바뀐다" },
+          { title: "검색어", body: "검색어로 조회한다" },
+          { title: "초기화", body: "검색 조건을 비운다" },
+        ],
+      },
+    ]);
+    const success = cases.filter((item) => item.kind === "success");
+    assert.deepEqual(success.map((item) => item.title), [
+      "관리자 사용자 현황 · 이름",
+      "관리자 사용자 현황 · 성별",
+      "관리자 사용자 현황 · 검색어",
+      "관리자 사용자 현황 · 초기화",
+    ]);
+    for (const item of success) {
+      assert.ok(item.inputs.length <= 1, item.title);
+      assert.ok(!item.id.endsWith("-success"), item.id);
+    }
+    assert.ok(success.every((item) => item.inputs.length <= 1 || item.buttonName === "조회"));
+    assert.equal(cases.some((item) => item.title.endsWith("성공")), false);
+    assert.equal(cases.filter((item) => item.id.includes("check")).length, 0);
+  });
+
+  it("기능 행이 없고 입력 칸만 여러 개면 칸마다 TC를 만든다", () => {
+    const cases = buildTestCases([
+      {
+        screenKey: "screen-1",
+        screenName: "관리자 사용자 현황",
+        inputs: [
+          { target: "이름", constraint: "", warning: "", failureExample: "" },
+          { target: "성별", constraint: "", warning: "", failureExample: "" },
+        ],
+        successText: "사용자 목록 조회",
+        buttonName: "조회",
+      },
+    ]);
+    const success = cases.filter((item) => item.kind === "success");
+    assert.equal(success.length, 2);
+    assert.ok(success.every((item) => item.inputs.length === 1));
   });
 
   it("이미 성공·실패로 만든 기능 행은 확인 TC로 다시 만들지 않는다", () => {

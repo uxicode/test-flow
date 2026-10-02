@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
+import "./load-env.js";
 import { registerRoutes } from "./routes.js";
 
 const port = Number(process.env.PORT || 8787);

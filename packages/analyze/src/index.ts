@@ -1,3 +1,4 @@
+export { textModel, visionModel } from "./models.js";
 export { createOllamaWorker } from "./ollama-worker.js";
 export { runAnalysisJob } from "./orchestrator.js";
 export { planQuestions } from "./plan-questions.js";

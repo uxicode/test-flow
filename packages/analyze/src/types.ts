@@ -26,6 +26,9 @@ export interface InputFinding {
   constraint: string;
   warning: string;
   failureExample: string;
+  /** text, select, radio, checkbox, date, date_range, combobox */
+  control?: string;
+  options?: string[];
 }
 
 export interface ScreenFeature {
@@ -72,6 +75,6 @@ export interface PlannedQuestion {
 }
 
 export interface AnalysisWorker {
-  ask(input: { text: string; signal: AbortSignal }): Promise<string>;
+  ask(input: { text: string; images?: string[]; signal: AbortSignal }): Promise<string>;
   unload(): Promise<void>;
 }

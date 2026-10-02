@@ -1,17 +1,6 @@
-export interface TcInput {
-  target: string;
-  value: string;
-}
+import type { TcInput, TestCase } from "@testflow/tc";
 
-export interface TestCase {
-  id: string;
-  screenName: string;
-  kind: "success" | "failure";
-  title: string;
-  inputs: TcInput[];
-  buttonName: string;
-  expectedText: string;
-}
+export type { TcInput, TestCase };
 
 export interface AnalysisView {
   jobId: string;

@@ -169,4 +169,304 @@ describe("runAnalysisJob", () => {
     assert.equal(result.status, JOB_STATUS.cancelled);
     assert.ok(result.questions.some((question) => question.status === QUESTION_STATUS.cancelled));
   });
+
+  it("텍스트 기획서는 비전 워커를 쓰지 않는다", async () => {
+    let visionAsks = 0;
+    let textAsks = 0;
+    const result = await runAnalysisJob({
+      jobId: "job-3",
+      specText: "화면 ID\n로그인\n[이메일 입력] 형식 오류 시 올바른 이메일 형식을 입력해주세요.",
+      worker: {
+        async ask() {
+          textAsks += 1;
+          return JSON.stringify({
+            screenName: "로그인",
+            inputs: [{ target: "이메일", constraint: "", warning: "", failureExample: "" }],
+            successText: "",
+            buttonName: "",
+          });
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      visionWorker: {
+        async ask() {
+          visionAsks += 1;
+          return "{}";
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    });
+    assert.equal(result.status, JOB_STATUS.completed);
+    assert.equal(textAsks, 1);
+    assert.equal(visionAsks, 0);
+  });
+
+  it("피그마 스크린샷이 있으면 비전 워커에 이미지를 넣는다", async () => {
+    let sawImage = false;
+    const png = new Uint8Array([1, 2, 3]).buffer;
+    const result = await runAnalysisJob({
+      jobId: "job-4",
+      url: "https://www.figma.com/design/Abcdefghijklmnopqr12/Spec?node-id=1-2",
+      token: "token",
+      fetchImpl: async (requestUrl) => {
+        if (requestUrl.includes("/images/")) {
+          return {
+            status: 200,
+            json: async () => ({ images: { "1:2": "https://img.example/shot.png" } }),
+          };
+        }
+        if (requestUrl.includes("img.example")) {
+          return {
+            status: 200,
+            json: async () => ({}),
+            arrayBuffer: async () => png,
+          };
+        }
+        return {
+          status: 200,
+          json: async () => ({
+            nodes: {
+              "1:2": {
+                document: {
+                  id: "1:2",
+                  name: "기획",
+                  type: "FRAME",
+                  children: [
+                    { id: "a", name: "화면 ID", type: "TEXT", characters: "화면 ID" },
+                    { id: "b", name: "로그인", type: "TEXT", characters: "[관리자] 로그인" },
+                    { id: "c", name: "본문", type: "TEXT", characters: "[이메일 입력] 형식 오류" },
+                  ],
+                },
+              },
+            },
+          }),
+        };
+      },
+      worker: {
+        async ask() {
+          return "{}";
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      visionWorker: {
+        async ask(input) {
+          sawImage = Boolean(input.images?.length);
+          return JSON.stringify({
+            screenName: "로그인",
+            inputs: [{ target: "이메일", constraint: "", warning: "", failureExample: "" }],
+            successText: "",
+            buttonName: "로그인",
+          });
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    });
+    assert.equal(result.status, JOB_STATUS.completed);
+    assert.equal(sawImage, true);
+  });
+
+  it("비전 요청이 실패하면 텍스트 워커로 다시 묻는다", async () => {
+    let textAsks = 0;
+    const png = new Uint8Array([1, 2, 3]).buffer;
+    const result = await runAnalysisJob({
+      jobId: "job-5",
+      url: "https://www.figma.com/design/Abcdefghijklmnopqr12/Spec?node-id=1-2",
+      token: "token",
+      fetchImpl: async (requestUrl) => {
+        if (requestUrl.includes("/images/")) {
+          return {
+            status: 200,
+            json: async () => ({ images: { "1:2": "https://img.example/shot.png" } }),
+          };
+        }
+        if (requestUrl.includes("img.example")) {
+          return {
+            status: 200,
+            json: async () => ({}),
+            arrayBuffer: async () => png,
+          };
+        }
+        return {
+          status: 200,
+          json: async () => ({
+            nodes: {
+              "1:2": {
+                document: {
+                  id: "1:2",
+                  name: "기획",
+                  type: "FRAME",
+                  children: [
+                    { id: "a", name: "화면 ID", type: "TEXT", characters: "화면 ID" },
+                    { id: "b", name: "로그인", type: "TEXT", characters: "[관리자] 로그인" },
+                    { id: "c", name: "본문", type: "TEXT", characters: "[이메일 입력] 형식 오류" },
+                  ],
+                },
+              },
+            },
+          }),
+        };
+      },
+      worker: {
+        async ask() {
+          return "{}";
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      visionWorker: {
+        async ask() {
+          throw new Error("Ollama 요청에 실패했습니다. HTTP 400 · exceeds the available context size");
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      textWorker: {
+        async ask() {
+          textAsks += 1;
+          return JSON.stringify({
+            screenName: "로그인",
+            inputs: [{ target: "이메일", constraint: "", warning: "", failureExample: "" }],
+            successText: "",
+            buttonName: "로그인",
+          });
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    });
+    assert.equal(result.status, JOB_STATUS.completed);
+    assert.equal(textAsks, 1);
+    assert.equal(result.questions[0]?.status, QUESTION_STATUS.succeeded);
+  });
+
+  it("비전 응답 JSON이 깨지면 텍스트 워커로 재시도한다", async () => {
+    let textAsks = 0;
+    let visionUnloads = 0;
+    const png = new Uint8Array([1, 2, 3]).buffer;
+    const result = await runAnalysisJob({
+      jobId: "job-5b",
+      url: "https://www.figma.com/design/Abcdefghijklmnopqr12/Spec?node-id=1-2",
+      token: "token",
+      fetchImpl: async (requestUrl) => {
+        if (requestUrl.includes("/images/")) {
+          return {
+            status: 200,
+            json: async () => ({ images: { "1:2": "https://img.example/shot.png" } }),
+          };
+        }
+        if (requestUrl.includes("img.example")) {
+          return {
+            status: 200,
+            json: async () => ({}),
+            arrayBuffer: async () => png,
+          };
+        }
+        return {
+          status: 200,
+          json: async () => ({
+            nodes: {
+              "1:2": {
+                document: {
+                  id: "1:2",
+                  name: "기획",
+                  type: "FRAME",
+                  children: [
+                    { id: "a", name: "화면 ID", type: "TEXT", characters: "화면 ID" },
+                    { id: "b", name: "로그인", type: "TEXT", characters: "[관리자] 로그인" },
+                    { id: "c", name: "본문", type: "TEXT", characters: "[이메일 입력] 형식 오류" },
+                  ],
+                },
+              },
+            },
+          }),
+        };
+      },
+      worker: {
+        async ask() {
+          return "{}";
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      visionWorker: {
+        async ask() {
+          // qwen2.5vl:7b가 JSON 대신 자연어로 응답하는 케이스를 재현
+          return "not json at all";
+        },
+        async unload() {
+          visionUnloads += 1;
+        },
+      },
+      textWorker: {
+        async ask() {
+          textAsks += 1;
+          return JSON.stringify({
+            screenName: "로그인",
+            inputs: [{ target: "이메일", constraint: "", warning: "", failureExample: "" }],
+            successText: "",
+            buttonName: "로그인",
+          });
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    });
+    // 비전 JSON 오류 → 텍스트 재시도 → 성공
+    assert.equal(textAsks, 1);
+    assert.ok(visionUnloads >= 1);
+    assert.equal(result.questions[0]?.status, QUESTION_STATUS.succeeded);
+    assert.equal(result.status, "completed");
+  });
+
+  it("기획서에 없는 경고는 실패 항목으로 남기지 않는다", async () => {
+    const result = await runAnalysisJob({
+      jobId: "job-6",
+      specText: "화면 ID\n[관리자] 사용자 현황\n이름, 성별로 조회한다.",
+      worker: {
+        async ask() {
+          return JSON.stringify({
+            screenName: "관리자 사용자 현황",
+            inputs: [
+              {
+                target: "이름",
+                constraint: "필수",
+                warning: "이름을 입력해주세요.",
+                failureExample: "이름",
+              },
+            ],
+            successText: "",
+            buttonName: "조회",
+          });
+        },
+        async unload() {
+          return undefined;
+        },
+      },
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    });
+    assert.equal(result.status, JOB_STATUS.completed);
+    assert.equal(result.screens[0]?.inputs[0]?.warning, "");
+  });
 });

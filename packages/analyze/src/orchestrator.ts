@@ -1,4 +1,6 @@
-import { fetchSpecLines, segmentScreens, type FetchLike } from "@testflow/figma";
+import { fetchSpecImage, fetchSpecLines, segmentScreens, type FetchLike } from "@testflow/figma";
+import { textModel, visionMaxSide, visionModel } from "./models.js";
+import { keepSpecWarnings } from "./keep-spec-warnings.js";
 import { parseModelJson } from "./parse-model-json.js";
 import { planQuestions } from "./plan-questions.js";
 import { buildQuestionPrompt } from "./prompt.js";
@@ -30,12 +32,37 @@ function linkAbort(parent: AbortSignal, child: AbortController): void {
   parent.addEventListener("abort", () => child.abort(), { once: true });
 }
 
+async function unloadQuestionWorkers(options: {
+  hadVision: boolean;
+  visionWorker: AnalysisWorker;
+  textWorker: AnalysisWorker;
+}): Promise<void> {
+  if (options.hadVision) await options.visionWorker.unload().catch(() => undefined);
+  if (options.textWorker !== options.visionWorker) {
+    await options.textWorker.unload().catch(() => undefined);
+  } else if (!options.hadVision) {
+    await options.textWorker.unload().catch(() => undefined);
+  }
+}
+
+function linesFromSpec(text: string): string[] {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export async function runAnalysisJob(options: {
   jobId: string;
-  url: string;
-  token: string;
+  url?: string;
+  token?: string;
+  specText?: string;
   fetchImpl?: FetchLike;
   worker: AnalysisWorker;
+  textWorker?: AnalysisWorker;
+  visionWorker?: AnalysisWorker;
+  textModel?: string;
+  visionModel?: string;
   timeoutMs?: number;
   signal: AbortSignal;
   onEvent: (event: AnalysisEvent) => void;
@@ -67,22 +94,48 @@ export async function runAnalysisJob(options: {
 
   try {
     if (options.signal.aborted) return finish(JOB_STATUS.cancelled, "사용자가 중지했습니다.");
-    emit("피그마 텍스트를 읽는 중", JOB_STATUS.fetching);
-    const lines = await fetchSpecLines({
-      url: options.url,
-      token: options.token,
-      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-    });
+    const specText = options.specText?.trim() ?? "";
+    const figmaUrl = options.url?.trim() ?? "";
+    const figmaToken = options.token?.trim() ?? "";
+    let lines: string[] = [];
+    let image: string | null = null;
+
+    if (specText && !figmaUrl) {
+      emit("텍스트 기획서를 읽는 중", JOB_STATUS.fetching);
+      lines = linesFromSpec(specText);
+    } else if (figmaUrl && figmaToken) {
+      emit("피그마 화면과 텍스트를 읽는 중", JOB_STATUS.fetching);
+      const fetchOpts = {
+        url: figmaUrl,
+        token: figmaToken,
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+      };
+      lines = await fetchSpecLines(fetchOpts);
+      image = await fetchSpecImage({ ...fetchOpts, maxSide: visionMaxSide() }).catch(() => null);
+    } else {
+      return finish(JOB_STATUS.failed, "Figma URL·토큰 또는 텍스트 기획서가 필요합니다.");
+    }
     if (options.signal.aborted) {
       await options.worker.unload();
       return finish(JOB_STATUS.cancelled, "사용자가 중지했습니다.");
     }
 
     emit("질문을 나누는 중", JOB_STATUS.planning);
-    planned = planQuestions(segmentScreens(lines));
+    let segments = segmentScreens(lines);
+    if (segments.length === 0 && specText)
+      segments = [{ screenKey: "screen-1", screenName: "기획서", body: specText }];
+    planned = planQuestions(segments);
     if (planned.length === 0) {
       return finish(JOB_STATUS.failed, "설명 텍스트에서 화면을 찾지 못했습니다.");
     }
+    const useVision = Boolean(image);
+    const textName = options.textModel ?? textModel();
+    const visionName = options.visionModel ?? visionModel();
+    emit(
+      useVision
+        ? `${visionName}로 화면을 보고 설명을 맞추는 중`
+        : `${textName}로 텍스트를 분석하는 중`,
+    );
     for (const question of planned) {
       questions.push({
         id: question.id,
@@ -93,6 +146,9 @@ export async function runAnalysisJob(options: {
       });
     }
     emit(`질문 ${planned.length}개로 나눔`, JOB_STATUS.running);
+    const specSource = [specText, ...lines].filter(Boolean).join("\n");
+    const visionWorker = options.visionWorker ?? options.worker;
+    const textWorker = options.textWorker ?? options.worker;
 
     for (let index = 0; index < planned.length; index += 1) {
       const question = planned[index];
@@ -105,12 +161,38 @@ export async function runAnalysisJob(options: {
       }
       record.status = QUESTION_STATUS.running;
       emit(`질문 ${index + 1}/${planned.length} 시작 · ${question.screenName}`);
-      const outcome = await askOne({
-        text: buildQuestionPrompt(question.text),
-        worker: options.worker,
+      const images = image ? [image] : [];
+      const hadVision = images.length > 0;
+      const worker = hadVision ? visionWorker : textWorker;
+      let outcome = await askOne({
+        text: buildQuestionPrompt(question.text, { vision: hadVision }),
+        spec: specSource,
+        images,
+        worker,
         timeoutMs,
         parent: options.signal,
       });
+      if (hadVision) await visionWorker.unload().catch(() => undefined);
+      const canRetryWithText =
+        hadVision &&
+        outcome.status === QUESTION_STATUS.failed &&
+        !options.signal.aborted;
+      if (canRetryWithText) {
+        const rawSnippet = outcome.rawResponse
+          ? ` · 비전 원시응답: ${outcome.rawResponse.slice(0, 120).replace(/\n/g, " ")}…`
+          : "";
+        emit(
+          `질문 ${index + 1}/${planned.length} 비전 실패, 텍스트로 재시도 · ${outcome.message}${rawSnippet}`,
+        );
+        outcome = await askOne({
+          text: buildQuestionPrompt(question.text),
+          spec: specSource,
+          images: [],
+          worker: textWorker,
+          timeoutMs,
+          parent: options.signal,
+        });
+      }
       record.status = outcome.status;
       record.message = outcome.message;
       emit(`질문 ${index + 1}/${planned.length} ${outcome.log}`);
@@ -121,7 +203,7 @@ export async function runAnalysisJob(options: {
           screenName: outcome.analysis.screenName || question.screenName,
         });
       }
-      if (outcome.unload) await options.worker.unload();
+      await unloadQuestionWorkers({ hadVision, visionWorker, textWorker });
       if (options.signal.aborted) {
         for (const pending of questions) {
           if (pending.status === QUESTION_STATUS.pending) {
@@ -153,6 +235,8 @@ export async function runAnalysisJob(options: {
 
 async function askOne(options: {
   text: string;
+  spec: string;
+  images?: string[];
   worker: AnalysisWorker;
   timeoutMs: number;
   parent: AbortSignal;
@@ -162,6 +246,8 @@ async function askOne(options: {
   log: string;
   analysis?: ScreenAnalysis;
   unload: boolean;
+  /** 모델이 반환한 원시 문자열 (JSON 파싱 실패 디버깅용) */
+  rawResponse?: string;
 }> {
   const controller = new AbortController();
   let timedOut = false;
@@ -170,8 +256,13 @@ async function askOne(options: {
     controller.abort();
   }, options.timeoutMs);
   linkAbort(options.parent, controller);
+  let raw = "";
   try {
-    const raw = await options.worker.ask({ text: options.text, signal: controller.signal });
+    raw = await options.worker.ask({
+      text: options.text,
+      ...(options.images?.length ? { images: options.images } : {}),
+      signal: controller.signal,
+    });
     clearTimeout(timer);
     if (options.parent.aborted) {
       return {
@@ -181,7 +272,7 @@ async function askOne(options: {
         unload: true,
       };
     }
-    const analysis = parseModelJson(raw, "", "");
+    const analysis = keepSpecWarnings(parseModelJson(raw, "", ""), options.spec);
     return {
       status: QUESTION_STATUS.succeeded,
       message: "완료",
@@ -213,6 +304,7 @@ async function askOne(options: {
       message,
       log: message,
       unload: false,
+      rawResponse: raw || undefined,
     };
   }
 }

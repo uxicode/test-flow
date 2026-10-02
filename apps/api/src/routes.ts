@@ -1,7 +1,7 @@
 import "@fastify/websocket";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { createOllamaWorker, runAnalysisJob } from "@testflow/analyze";
+import { createOllamaWorker, runAnalysisJob, textModel, visionModel } from "@testflow/analyze";
 import { runTestCase } from "@testflow/runner";
 import { buildTestCases, type TestCase } from "@testflow/tc";
 import { getJob, saveJob } from "./job-store.js";
@@ -30,16 +30,23 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const body = isRecord(req.body) ? req.body : {};
     const url = typeof body.url === "string" ? body.url : "";
     const token = typeof body.token === "string" ? body.token : "";
-    if (!url || !token)
-      return reply.code(400).send({ error: "url과 token이 필요합니다." });
+    const specText = typeof body.specText === "string" ? body.specText : "";
+    if ((!url || !token) && !specText.trim())
+      return reply.code(400).send({ error: "Figma URL·토큰 또는 텍스트 기획서가 필요합니다." });
     const jobId = randomUUID();
     const controller = new AbortController();
     saveJob({ jobId, status: "fetching", cases: [], controller });
+    const textWorker = createOllamaWorker({ model: textModel() });
+    const visionWorker = createOllamaWorker({ model: visionModel() });
     void runAnalysisJob({
       jobId,
-      url,
-      token,
-      worker: createOllamaWorker(),
+      ...(url && token ? { url, token } : {}),
+      ...(specText.trim() ? { specText } : {}),
+      worker: textWorker,
+      textWorker,
+      visionWorker,
+      textModel: textModel(),
+      visionModel: visionModel(),
       signal: controller.signal,
       onEvent: (event) => {
         publishLog(jobId, event.message);
