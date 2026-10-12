@@ -1,6 +1,6 @@
-import type { TcInput, TestCase } from "@testflow/tc";
+import type { TcInput, TestCase, TcTableAssert } from "@testflow/tc";
 
-export type { TcInput, TestCase };
+export type { TcInput, TestCase, TcTableAssert };
 
 export interface AnalysisView {
   jobId: string;

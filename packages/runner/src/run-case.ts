@@ -3,6 +3,7 @@ import { chromium, type Locator, type Page } from "playwright";
 import { applyFieldValue } from "./apply-field.js";
 import { isLoginCase, isLoginStartUrl, valuesForCase } from "./case-values.js";
 import { findShownPhrase, openedScreenTitle, phrasesToFind } from "./match-phrase.js";
+import { checkTableRows, extractTables } from "./table-assert.js";
 
 export interface RunLog {
   message: string;
@@ -93,14 +94,23 @@ export function buttonNameVariants(name: string): string[] {
 
 async function locateButton(page: Page, name: string): Promise<Locator> {
   const variants = buttonNameVariants(name);
+  // 1차: 버튼 이름 완전 일치 ('조회'가 '상세조회'·'조회기간'에 걸리지 않게)
+  for (const variant of variants) {
+    const exact = new RegExp(`^\\s*${variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "u");
+    const found = await firstVisible([
+      page.getByRole("button", { name: exact }),
+      page.getByRole("link", { name: exact }),
+      page.locator('button, [role="button"], a, input[type="button"], input[type="submit"]').filter({ hasText: exact }),
+    ]);
+    if (found) return found;
+  }
+  // 2차: 부분 일치 (완전 일치 버튼이 없을 때만)
   for (const variant of variants) {
     const pattern = new RegExp(variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     const found = await firstVisible([
       page.getByRole("button", { name: pattern }),
       page.getByRole("link", { name: pattern }),
       page.locator('button, [role="button"], a, input[type="button"], input[type="submit"]').filter({ hasText: pattern }),
-      page.locator('button, [role="button"], a').getByText(pattern, { exact: false }),
-      page.locator('input[type="submit"], input[type="button"]'),
     ]);
     if (found) return found;
   }
@@ -398,6 +408,20 @@ async function waitForSuccessScreen(page: Page, phrases: string[]): Promise<{ sh
   throw new Error(`화면에 "${label}" 가 보이지 않습니다.`);
 }
 
+/** 표 검증: 조회 결과가 반영될 때까지 다시 검사하고, 시간 내 통과하지 못하면 마지막 실패 사유로 실패한다. */
+async function waitForTableAssert(page: Page, assert: NonNullable<TestCase["assert"]>): Promise<string> {
+  const deadline = Date.now() + 10_000;
+  let last = `"${assert.column}" 열을 가진 표를 찾지 못했습니다.`;
+  while (Date.now() < deadline) {
+    const tables = await extractTables(page);
+    const result = checkTableRows(tables, assert);
+    if (result.ok) return result.message;
+    last = result.message;
+    await page.waitForTimeout(300);
+  }
+  throw new Error(last);
+}
+
 async function showOutcome(page: Page, title: string, detail: string): Promise<void> {
   const isPass = title === "통과";
   await page.evaluate(({ title, detail, isPass }) => {
@@ -545,6 +569,7 @@ export async function runTestCase(options: {
     void close();
   };
   options.signal.addEventListener("abort", onAbort, { once: true });
+  let stage: "setup" | "query" | "expect" | "assert" = "setup";
   try {
     await page.goto(options.startUrl, { waitUntil: "domcontentloaded" });
     await ensureCursor(page);
@@ -563,7 +588,9 @@ export async function runTestCase(options: {
     }
     for (const input of inputs) {
       if (options.signal.aborted || browserGone) throw new Error("사용자가 중지했습니다.");
-      await applyFieldValue(page, input, liveLog, (locator) => pointAt(page, locator));
+      await applyFieldValue(page, input, liveLog, (locator) => pointAt(page, locator), {
+        optionContainerSelector: options.testCase.optionContainerSelector,
+      });
       await page.waitForTimeout(250);
     }
     if (options.signal.aborted || browserGone) throw new Error("사용자가 중지했습니다.");
@@ -572,14 +599,29 @@ export async function runTestCase(options: {
       const point = await pointAt(page, button);
       liveLog(`${options.testCase.buttonName} 버튼을 가리킴`);
       await page.waitForTimeout(250);
+      // 조회 응답은 클릭 전에 기다림을 걸어 둔다. (클릭 직후 응답을 놓치지 않게)
+      const apiPath = options.testCase.apiPath?.trim();
+      const responseWait = apiPath
+        ? page.waitForResponse((response) => response.url().includes(apiPath), { timeout: 15_000 })
+        : null;
+      responseWait?.catch(() => undefined);
       try {
         await button.click({ timeout: 3000 });
       } catch {
         await page.mouse.click(point.x, point.y);
       }
       liveLog(`${options.testCase.buttonName} 버튼을 누름`);
+      stage = "query";
+      if (responseWait) {
+        await responseWait.catch(() => {
+          throw new Error(`조회 응답(${apiPath})을 받지 못했습니다.`);
+        });
+      }
+      // API 경로가 없으면 네트워크가 잠잠해질 때까지 기다린다.
+      await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
       await page.waitForTimeout(200);
     }
+    stage = "expect";
     const phrases = phrasesToFind(options.testCase.expectedText);
     const phrase = phrases[0] ?? options.testCase.expectedText.trim();
     log(`기대 문구 확인: "${phrase}"`);
@@ -590,6 +632,11 @@ export async function runTestCase(options: {
           ? `기획서의 "${phrase}" 대신 화면 "${landed.shown}" 이 열렸습니다.`
           : `화면에 "${landed.shown}" 이 보입니다.`,
       );
+      if (options.testCase.assert) {
+        stage = "assert";
+        const detail = await waitForTableAssert(page, options.testCase.assert);
+        log(detail);
+      }
       await showOutcome(page, "통과", landed.shown);
     } else {
       const shown = await waitForShownPhrase(page, phrases);
@@ -598,7 +645,13 @@ export async function runTestCase(options: {
     }
   } catch (error) {
     if (options.signal.aborted) throw new Error("사용자가 중지했습니다.");
-    const message = readableRunError(error, options.testCase.expectedText);
+    // 기대 문구 확인 단계에서만 "화면에 ... 보이지 않습니다"로 바꾼다. 앞 단계 오류는 원래 메시지를 유지해 원인이 가려지지 않게 한다.
+    const message =
+      stage === "expect" || /closed|disconnected|Target page/iu.test(String(error))
+        ? readableRunError(error, options.testCase.expectedText)
+        : error instanceof Error
+          ? (error.message.split("\n")[0] ?? "실행 실패")
+          : "실행 실패";
     await showOutcome(page, "실패", message).catch(() => undefined);
     throw new Error(message);
   } finally {

@@ -92,6 +92,8 @@ export function App() {
   const [isWorking, setIsWorking] = useState(false);
   const [busyAction, setBusyAction] = useState<"analyze" | "text" | "cancel" | "refresh" | "stop-run" | null>(null);
   const [runningCaseId, setRunningCaseId] = useState("");
+  /** `${caseId}:${inputTarget}` 또는 `${caseId}:__option_container__` */
+  const [inspectingFieldKey, setInspectingFieldKey] = useState("");
   const [editingInputKey, setEditingInputKey] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -252,6 +254,61 @@ export function App() {
     return own;
   }
 
+  function updateTestCase(caseId: string, patch: Partial<TestCase>) {
+    setCases((current) =>
+      current.map((tc) => (tc.id === caseId ? { ...tc, ...patch } : tc)),
+    );
+  }
+
+  function updateInputField(caseId: string, inputTarget: string, patch: Partial<TcInput>) {
+    setCases((current) =>
+      current.map((tc) => {
+        if (tc.id !== caseId) return tc;
+        return {
+          ...tc,
+          inputs: tc.inputs.map((input) =>
+            input.target === inputTarget ? { ...input, ...patch } : input,
+          ),
+        };
+      }),
+    );
+  }
+
+  function inspectFieldKey(caseId: string, inputTarget: string): string {
+    return `${caseId}:${inputTarget}`;
+  }
+
+  async function handlePickSelector(caseId: string, inputTarget: string) {
+    if (!startUrl || !/^https?:\/\//iu.test(startUrl)) {
+      setErrorMessage("셀렉터를 추출하려면 먼저 하단에 http(s) 시작 URL을 입력해야 합니다.");
+      return;
+    }
+    const fieldKey = inspectFieldKey(caseId, inputTarget);
+    const startedAt = Date.now();
+    setInspectingFieldKey(fieldKey);
+    setErrorMessage("");
+    try {
+      const res = await postJson<{ selector: string }>("/api/inspect-selector", {
+        startUrl,
+        loginEmail: accountEmail,
+        loginPassword: accountPassword,
+      });
+      if (!res.selector) {
+        setErrorMessage("셀렉터가 적용되지 않았습니다. 브라우저에서 요소를 클릭한 뒤 [적용하기]를 눌러야 합니다.");
+      } else if (inputTarget === "__option_container__") {
+        updateTestCase(caseId, { optionContainerSelector: res.selector });
+      } else {
+        updateInputField(caseId, inputTarget, { selector: res.selector });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "셀렉터 추출에 실패했습니다.";
+      setErrorMessage(message);
+    } finally {
+      await holdBusy(startedAt);
+      setInspectingFieldKey("");
+    }
+  }
+
   async function handleRun(testCase: TestCase) {
     if (!jobId) return;
     const startedAt = Date.now();
@@ -266,6 +323,10 @@ export function App() {
         values: mergedValues(testCase),
         loginEmail: accountEmail,
         loginPassword: accountPassword,
+        apiPath: testCase.apiPath,
+        assert: testCase.assert,
+        optionContainerSelector: testCase.optionContainerSelector,
+        inputs: testCase.inputs,
       });
       setRunIds((current) => ({ ...current, [testCase.id]: created.runId }));
     } catch (error) {
@@ -507,11 +568,34 @@ export function App() {
               {testCase.kind === "success"
                 ? testCase.inputs.filter((input) => !isAccountField(input.target)).map((input) => (
                     <label key={input.target} className="block space-y-1 text-xs text-slate-400">
-                      <span>
-                        {input.target}
-                        {controlLabel(input)}
-                        {input.options?.length ? ` · ${input.options.join(" / ")}` : ""}
+                      <span className="flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                          {input.target}
+                          {controlLabel(input)}
+                          {input.options?.length ? ` · ${input.options.join(" / ")}` : ""}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={Boolean(inspectingFieldKey)}
+                          onClick={() => void handlePickSelector(testCase.id, input.target)}
+                          className="inline-flex shrink-0 items-center gap-1 rounded bg-purple-600/30 px-2 py-0.5 text-[11px] font-medium text-purple-300 border border-purple-500/50 hover:bg-purple-600/50 disabled:opacity-50 transition-colors cursor-pointer"
+                        >
+                          {inspectingFieldKey === inspectFieldKey(testCase.id, input.target)
+                            ? "브라우저에서 선택 후 적용하기…"
+                            : "셀렉터 이름 가져오기"}
+                        </button>
                       </span>
+                      <input
+                        type="text"
+                        placeholder="CSS 셀렉터 (비우면 라벨로 자동 탐색)"
+                        className="block w-full rounded border border-slate-700/80 bg-slate-950/80 px-2 py-1 text-[11px] text-slate-300 placeholder-slate-600 focus:border-purple-500/60 focus:outline-none"
+                        value={input.selector ?? ""}
+                        onChange={(event) =>
+                          updateInputField(testCase.id, input.target, {
+                            selector: event.target.value,
+                          })
+                        }
+                      />
                       {input.options && input.options.length > 0 ? (
                         <select
                           className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
@@ -597,6 +681,140 @@ export function App() {
                     </label>
                   ))
                 : null}
+              <details className="mt-2 rounded-md border border-slate-700/80 bg-slate-900/60 p-2.5 text-xs text-slate-300">
+                <summary className="cursor-pointer font-medium text-slate-400 hover:text-slate-200 select-none">
+                  ⚙️ 실행 및 검증 상세 설정 (API 대기 / 표 열 검증 / 드롭다운 컨테이너)
+                </summary>
+                <div className="mt-3 space-y-3 pt-2 border-t border-slate-800">
+                  <label className="block space-y-1">
+                    <span className="text-slate-400">조회 완료 대기 API 경로 (선택)</span>
+                    <input
+                      type="text"
+                      placeholder="예: /api/users 또는 users/search (비워두면 네트워크 idle 대기)"
+                      className="block w-full rounded border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                      value={testCase.apiPath ?? ""}
+                      onChange={(e) => updateTestCase(testCase.id, { apiPath: e.target.value })}
+                    />
+                  </label>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">옵션 탐색 컨테이너 속성 / 셀렉터 (선택)</span>
+                      <button
+                        type="button"
+                        disabled={Boolean(inspectingFieldKey)}
+                        onClick={() => void handlePickSelector(testCase.id, "__option_container__")}
+                        className="inline-flex items-center gap-1 rounded bg-purple-600/30 px-2 py-0.5 text-[11px] font-medium text-purple-300 border border-purple-500/50 hover:bg-purple-600/50 disabled:opacity-50 transition-colors cursor-pointer"
+                      >
+                        {inspectingFieldKey === inspectFieldKey(testCase.id, "__option_container__")
+                          ? "브라우저에서 선택 후 적용하기…"
+                          : "셀렉터 이름 가져오기"}
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="예: [role='listbox'], .custom-dropdown, [data-floating-ui-portal]"
+                      className="block w-full rounded border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                      value={testCase.optionContainerSelector ?? ""}
+                      onChange={(e) => updateTestCase(testCase.id, { optionContainerSelector: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="space-y-2 rounded border border-slate-800 bg-slate-950/60 p-2">
+                    <label className="flex items-center gap-2 cursor-pointer text-slate-300 font-medium">
+                      <input
+                        type="checkbox"
+                        className="rounded border-slate-600 bg-slate-900 text-sky-500 focus:ring-0"
+                        checked={Boolean(testCase.assert)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            updateTestCase(testCase.id, {
+                              assert: {
+                                type: "table",
+                                column: "",
+                                every: "equals",
+                                value: "",
+                                minRows: 1,
+                              },
+                            });
+                          } else {
+                            updateTestCase(testCase.id, { assert: undefined });
+                          }
+                        }}
+                      />
+                      <span>조회 결과 표(Table) 열 일치 검증 활성화</span>
+                    </label>
+
+                    {testCase.assert ? (
+                      <div className="grid grid-cols-2 gap-2 pt-1 pl-5">
+                        <label className="space-y-1">
+                          <span className="text-slate-400">검증할 열(Column) 이름</span>
+                          <input
+                            type="text"
+                            placeholder="예: 상태, 성별"
+                            className="block w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                            value={testCase.assert.column}
+                            onChange={(e) =>
+                              updateTestCase(testCase.id, {
+                                assert: { ...testCase.assert!, column: e.target.value },
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-slate-400">일치 조건</span>
+                          <select
+                            className="block w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:border-sky-500 focus:outline-none"
+                            value={testCase.assert.every}
+                            onChange={(e) =>
+                              updateTestCase(testCase.id, {
+                                assert: {
+                                  ...testCase.assert!,
+                                  every: e.target.value === "contains" ? "contains" : "equals",
+                                },
+                              })
+                            }
+                          >
+                            <option value="equals">모든 행 완전 일치 (equals)</option>
+                            <option value="contains">모든 행 부분 일치 (contains)</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-slate-400">기대하는 셀 값</span>
+                          <input
+                            type="text"
+                            placeholder="예: 완료, 남성, 30"
+                            className="block w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                            value={testCase.assert.value}
+                            onChange={(e) =>
+                              updateTestCase(testCase.id, {
+                                assert: { ...testCase.assert!, value: e.target.value },
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-slate-400">최소 행 개수 (minRows)</span>
+                          <input
+                            type="number"
+                            min={1}
+                            className="block w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:border-sky-500 focus:outline-none"
+                            value={testCase.assert.minRows ?? 1}
+                            onChange={(e) =>
+                              updateTestCase(testCase.id, {
+                                assert: {
+                                  ...testCase.assert!,
+                                  minRows: Math.max(1, parseInt(e.target.value, 10) || 1),
+                                },
+                              })
+                            }
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </details>
               <ActionButton
                 label="이 TC 실행"
                 variant="sky"

@@ -4,7 +4,7 @@ interface ElementProps {
   key?: string | number;
   ref?: unknown;
   onClick?: () => void;
-  onChange?: (event: { target: { value: string } }) => void;
+  onChange?: (event: { target: { value: string; checked?: boolean } }) => void;
 }
 
 declare module "react" {

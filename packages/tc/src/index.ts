@@ -18,6 +18,7 @@ export {
   TC_KIND,
   type TcInput,
   type TcKind,
+  type TcTableAssert,
   type TestCase,
 } from "./build-test-cases.js";
 export { casesToMarkdown, casesToXlsx } from "./export-document.js";

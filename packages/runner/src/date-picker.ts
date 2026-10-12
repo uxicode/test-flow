@@ -163,17 +163,30 @@ async function pickDay(scope: Locator, date: ParsedDate): Promise<Locator> {
   return day;
 }
 
+async function locateTriggerBySelector(page: Page, selector: string): Promise<Locator | null> {
+  const trimmed = selector.trim();
+  if (!trimmed) return null;
+  const candidate = page.locator(trimmed).first();
+  if (await candidate.count().catch(() => 0)) {
+    if (await candidate.isVisible().catch(() => false)) return candidate;
+  }
+  return null;
+}
+
 export async function applyCustomDateRange(
   page: Page,
   target: string,
   value: string,
+  triggerSelector?: string,
 ): Promise<Locator> {
   const range =
     parseDateRangeValue(value) ??
     parseDateRangeValue(defaultDateRangeValue());
   if (!range) throw new Error(`${target} 기간 값을 해석하지 못했습니다.`);
 
-  const trigger = await locateDatePickerTrigger(page, target);
+  const trigger =
+    (triggerSelector ? await locateTriggerBySelector(page, triggerSelector) : null) ??
+    (await locateDatePickerTrigger(page, target));
   if (!trigger) throw new Error(`${target} 날짜 선택 버튼을 찾지 못했습니다.`);
 
   const dialog = await openPickerDialog(page, trigger);

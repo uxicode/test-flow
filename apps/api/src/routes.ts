@@ -2,8 +2,8 @@ import "@fastify/websocket";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { createOllamaWorker, runAnalysisJob, textModel, visionModel } from "@testflow/analyze";
-import { runTestCase } from "@testflow/runner";
-import { buildTestCases, type TestCase } from "@testflow/tc";
+import { inspectSelector, runTestCase } from "@testflow/runner";
+import { buildTestCases, parseControlKind, type TestCase, type TcInput, type TcTableAssert } from "@testflow/tc";
 import { getJob, saveJob } from "./job-store.js";
 import { publishLog, readLogs, subscribeLog } from "./log-hub.js";
 
@@ -108,11 +108,35 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const job = getJob(jobId);
     const testCase = job?.cases.find((item) => item.id === caseId);
     if (!testCase) return reply.code(404).send({ error: "TC를 찾지 못했습니다." });
+
+    const apiPath = typeof body.apiPath === "string" ? body.apiPath.trim() : undefined;
+    let assert: TcTableAssert | undefined;
+    if (isRecord(body.assert) && typeof body.assert.column === "string" && typeof body.assert.value === "string") {
+      assert = {
+        type: "table",
+        column: String(body.assert.column).trim(),
+        every: body.assert.every === "contains" ? "contains" : "equals",
+        value: String(body.assert.value).trim(),
+        minRows: typeof body.assert.minRows === "number" ? body.assert.minRows : Number(body.assert.minRows) || 1,
+      };
+    }
+    const optionContainerSelector =
+      typeof body.optionContainerSelector === "string" ? body.optionContainerSelector.trim() : undefined;
+    const inputsOverride = parseInputsOverride(body.inputs);
+
+    const mergedCase: TestCase = {
+      ...testCase,
+      ...(apiPath !== undefined ? { apiPath } : {}),
+      ...(assert !== undefined ? { assert } : {}),
+      ...(optionContainerSelector !== undefined ? { optionContainerSelector } : {}),
+      ...(inputsOverride ? { inputs: inputsOverride } : {}),
+    };
+
     const runId = randomUUID();
     const controller = new AbortController();
     const state: RunState = { runId, jobId, caseId, status: "running", report: "", steps: [], controller };
     runs.set(runId, state);
-    void runOne(state, testCase, startUrl, values, login);
+    void runOne(state, mergedCase, startUrl, values, login);
     return reply.code(202).send({ runId });
   });
 
@@ -139,6 +163,25 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
+  app.post("/api/inspect-selector", async (req, reply) => {
+    const body = isRecord(req.body) ? req.body : {};
+    const startUrl = typeof body.startUrl === "string" ? body.startUrl.trim() : "";
+    if (!/^https?:\/\//iu.test(startUrl)) {
+      return reply.code(400).send({ error: "http(s) 시작 URL이 필요합니다." });
+    }
+    const loginEmail = typeof body.loginEmail === "string" ? body.loginEmail.trim() : "";
+    const loginPassword = typeof body.loginPassword === "string" ? body.loginPassword : "";
+    const login = loginEmail && loginPassword ? { email: loginEmail, password: loginPassword } : undefined;
+
+    try {
+      const selector = await inspectSelector({ startUrl, login });
+      return { selector };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "셀렉터 추출 실패";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
   app.get("/ws/logs/:channelId", { websocket: true }, (socket, req) => {
     const { channelId } = req.params as { channelId: string };
     for (const event of readLogs(channelId)) socket.send(JSON.stringify(event));
@@ -147,6 +190,27 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     });
     socket.on("close", unsubscribe);
   });
+}
+
+function parseInputsOverride(raw: unknown): TcInput[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const parsed: TcInput[] = [];
+  for (const row of raw) {
+    if (!isRecord(row) || typeof row.target !== "string" || !row.target.trim()) continue;
+    const control = typeof row.control === "string" ? parseControlKind(row.control) : undefined;
+    const options = Array.isArray(row.options)
+      ? row.options.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : undefined;
+    const selector = typeof row.selector === "string" ? row.selector.trim() : undefined;
+    parsed.push({
+      target: row.target.trim(),
+      value: typeof row.value === "string" ? row.value : "",
+      ...(control ? { control } : {}),
+      ...(options?.length ? { options } : {}),
+      ...(selector ? { selector } : {}),
+    });
+  }
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 async function runOne(

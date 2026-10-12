@@ -27,6 +27,17 @@ export interface TcInput {
   value: string;
   control?: ControlKind;
   options?: string[];
+  /** 실행 시 이 CSS 셀렉터로 요소를 먼저 찾는다 (피커로 지정). */
+  selector?: string;
+}
+
+/** 조회 결과 표의 특정 열이 모든 행에서 조건을 만족하는지 검증한다. */
+export interface TcTableAssert {
+  type: "table";
+  column: string;
+  every: "equals" | "contains";
+  value: string;
+  minRows?: number;
 }
 
 export interface TestCase {
@@ -37,6 +48,11 @@ export interface TestCase {
   inputs: TcInput[];
   buttonName: string;
   expectedText: string;
+  /** 조회 버튼 클릭 후 기다릴 응답 URL의 일부. 없으면 네트워크 idle을 기다린다. */
+  apiPath?: string;
+  assert?: TcTableAssert;
+  /** 드롭다운 목록/팝오버 컨테이너 셀렉터 (비워두면 기본 컨테이너 목록 사용) */
+  optionContainerSelector?: string;
 }
 
 export function canonicalTarget(target: string): string {

@@ -46,7 +46,7 @@ export function buildQuestionPrompt(text: string, options?: { vision?: boolean }
     "  * checkbox: 단일 또는 다중 체크박스",
     "- file: 파일/이미지 첨부 칸",
     "- options 규칙:",
-    "  * select, radio, checkbox, combobox: 화면에 보이는 선택지 텍스트를 배열로 기재 (예: [\"전체\", \"남성\", \"여성\"])",
+    "  * select, radio, checkbox, combobox: 화면에 실제로 보이는 선택지 텍스트를 표기 그대로 배열로 기재 (예: [\"전체\", \"남성\", \"여성\"]). 화면에 없는 값을 추측해서 만들지 마세요. 목록 표시 개수 등 드롭다운 필터도 combobox입니다.",
     "  * text, password, textarea, date, date_range, file: options는 반드시 빈 배열([])로 지정",
     "",
     "# [4. 유효성 검증(warning, failureExample) 규칙]",
