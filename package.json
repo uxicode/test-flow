@@ -3,8 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --parallel --filter @testflow/api --filter @testflow/web dev",
-    "build": "pnpm -r --filter @testflow/figma --filter @testflow/analyze --filter @testflow/tc --filter @testflow/runner --filter @testflow/api --filter @testflow/web build",
-    "test": "pnpm --filter @testflow/figma --filter @testflow/analyze --filter @testflow/tc --filter @testflow/runner --filter @testflow/api test",
+    "build": "pnpm -r --filter @testflow/figma --filter @testflow/analyze --filter @testflow/tc --filter @testflow/runner --filter @testflow/matcher --filter @testflow/api --filter @testflow/web build",
+    "test": "pnpm --filter @testflow/figma --filter @testflow/analyze --filter @testflow/tc --filter @testflow/runner --filter @testflow/matcher --filter @testflow/api test",
     "lint": "pnpm -r lint"
   },
   "engines": {

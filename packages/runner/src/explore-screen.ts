@@ -25,6 +25,8 @@ interface RawElement {
   domId: string | null;
   cssPath: string;
   nativeOptions: string[];
+  /** 폼 연결이 없지만 요소 근처에 보이는 텍스트 (preceding sibling / 부모 텍스트) */
+  nearbyText: string | null;
   rect: { x: number; y: number; width: number; height: number };
 }
 
@@ -96,6 +98,32 @@ function collectElementsFromDOM(): RawElement[] {
       el.getAttribute("data-qa") ||
       null
     );
+  }
+
+  /**
+   * 폼 연결이 없는 경우의 근처 텍스트를 가져온다.
+   * 우선순위: 바로 앞 형제 요소 텍스트 → 부모 텍스트(입력 요소 제외)
+   */
+  function getNearbyText(el: Element): string | null {
+    const MAX_LEN = 40;
+
+    // 바로 앞 형제의 텍스트
+    const prev = el.previousElementSibling;
+    if (prev && !["input", "select", "textarea", "button"].includes(prev.tagName.toLowerCase())) {
+      const text = prev.textContent?.trim();
+      if (text && text.length >= 1 && text.length <= MAX_LEN) return text;
+    }
+
+    // 부모의 텍스트(입력 요소 자체 제외)
+    const parent = el.parentElement;
+    if (parent) {
+      const clone = parent.cloneNode(true) as Element;
+      clone.querySelectorAll("input,select,textarea,button").forEach((c) => c.remove());
+      const text = clone.textContent?.trim();
+      if (text && text.length >= 1 && text.length <= MAX_LEN) return text;
+    }
+
+    return null;
   }
 
   function computeCssPath(el: Element): string {
@@ -180,6 +208,10 @@ function collectElementsFromDOM(): RawElement[] {
             .filter(Boolean)
         : [];
 
+    // Only compute nearbyText when the accessible name wasn't formally associated
+    const hasForwardLabel = Boolean(ariaLabel || (domId && document.querySelector(`label[for="${domId}"]`)) || el.getAttribute("aria-labelledby"));
+    const nearbyText = hasForwardLabel ? null : getNearbyText(el);
+
     results.push({
       label,
       rawTag: tag,
@@ -193,6 +225,7 @@ function collectElementsFromDOM(): RawElement[] {
       domId,
       cssPath: computeCssPath(el),
       nativeOptions,
+      nearbyText,
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     });
   }
@@ -231,7 +264,7 @@ function classifyControlKind(raw: RawElement): ControlKind {
 function buildLocatorCandidates(raw: RawElement): LocatorCandidate[] {
   const candidates: LocatorCandidate[] = [];
 
-  // 1. testid
+  // 1. testid (가장 안정적)
   if (raw.testId) {
     candidates.push({ strategy: "testid", value: `[data-testid="${raw.testId}"]` });
   }
@@ -248,12 +281,17 @@ function buildLocatorCandidates(raw: RawElement): LocatorCandidate[] {
     candidates.push({ strategy: "label", value: raw.label });
   }
 
-  // 4. placeholder
+  // 4. nearby text (비연결 근접 텍스트 — label보다 신뢰도 낮음)
+  if (raw.nearbyText && raw.nearbyText !== raw.label) {
+    candidates.push({ strategy: "nearby-text", value: raw.nearbyText });
+  }
+
+  // 5. placeholder
   if (raw.placeholder) {
     candidates.push({ strategy: "placeholder", value: raw.placeholder });
   }
 
-  // 5. CSS (폴백)
+  // 6. CSS (폴백)
   if (raw.cssPath) {
     candidates.push({ strategy: "css", value: raw.cssPath });
   }

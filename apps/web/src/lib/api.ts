@@ -26,8 +26,10 @@ export interface ExploreView {
   error?: string;
 }
 
+export type LocatorStrategy = "testid" | "role+name" | "label" | "nearby-text" | "placeholder" | "css";
+
 export interface LocatorCandidate {
-  strategy: string;
+  strategy: LocatorStrategy;
   value: string;
 }
 
@@ -59,6 +61,61 @@ export interface ElementMapMeta {
 
 export interface ElementMapListView {
   maps: ElementMapMeta[];
+}
+
+export type MatchStatus = "matched" | "review" | "rejected" | "approved";
+export type MatchMethod = "exact" | "rule" | "model" | "human";
+
+export interface MatchCandidate {
+  elementMapId: string;
+  elementIndex: number;
+  elementLabel: string;
+  controlKind: string;
+  bestLocator: LocatorCandidate;
+  confidence: number;
+  method: MatchMethod;
+  reason: string;
+}
+
+export interface TcStepMatch {
+  tcId: string;
+  stepLabel: string;
+  controlKind?: string;
+  candidates: MatchCandidate[];
+  chosenIndex: number;
+  status: MatchStatus;
+  reviewNote?: string;
+}
+
+export interface MatchSet {
+  $version: number;
+  jobId: string;
+  mapId: string;
+  createdAt: string;
+  steps: TcStepMatch[];
+}
+
+export interface MatchSetMeta {
+  matchId: string;
+  jobId: string;
+  mapId: string;
+  createdAt: string;
+  totalSteps: number;
+  reviewCount: number;
+  matchedCount: number;
+}
+
+export interface MatchListView {
+  matches: MatchSetMeta[];
+}
+
+export interface MatchJobView {
+  matchJobId: string;
+  jobId: string;
+  mapId: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  matchId?: string;
+  error?: string;
 }
 
 export interface LogEvent {

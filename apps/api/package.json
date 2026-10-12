@@ -15,6 +15,7 @@
     "@fastify/websocket": "^11.0.2",
     "@testflow/analyze": "workspace:*",
     "@testflow/figma": "workspace:*",
+    "@testflow/matcher": "workspace:*",
     "@testflow/runner": "workspace:*",
     "@testflow/tc": "workspace:*",
     "fastify": "^5.1.0"
