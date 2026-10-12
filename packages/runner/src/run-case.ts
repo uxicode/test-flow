@@ -276,7 +276,7 @@ async function pointAt(page: Page, locator: Locator): Promise<{ x: number; y: nu
     box = await locator.first().boundingBox({ timeout: 1500 }).catch(() => null);
   }
   if (!box) {
-    return { x: 100, y: 100 };
+    throw new Error("요소가 화면에 보이지 않아 위치를 파악하지 못했습니다.");
   }
   const x = Math.max(10, box.x + Math.min(box.width / 2, 48));
   const y = Math.max(10, box.y + box.height / 2);
@@ -360,14 +360,10 @@ async function signInWithSharedAccount(
   await typeInto(page, "이메일", login.email, log);
   await typeInto(page, "비밀번호", login.password, log);
   const button = await locateButton(page, "로그인");
-  const point = await pointAt(page, button);
+  await pointAt(page, button);
   log("로그인 버튼을 가리킴");
   await page.waitForTimeout(250);
-  try {
-    await button.click({ timeout: 3000 });
-  } catch {
-    await page.mouse.click(point.x, point.y);
-  }
+  await button.click({ timeout: 3000 });
   log("로그인 버튼을 누름");
   await page.waitForTimeout(200);
   const deadline = Date.now() + 15_000;
@@ -596,7 +592,7 @@ export async function runTestCase(options: {
     if (options.signal.aborted || browserGone) throw new Error("사용자가 중지했습니다.");
     if (options.testCase.buttonName) {
       const button = await locateButton(page, options.testCase.buttonName);
-      const point = await pointAt(page, button);
+      await pointAt(page, button);
       liveLog(`${options.testCase.buttonName} 버튼을 가리킴`);
       await page.waitForTimeout(250);
       // 조회 응답은 클릭 전에 기다림을 걸어 둔다. (클릭 직후 응답을 놓치지 않게)
@@ -605,11 +601,7 @@ export async function runTestCase(options: {
         ? page.waitForResponse((response) => response.url().includes(apiPath), { timeout: 15_000 })
         : null;
       responseWait?.catch(() => undefined);
-      try {
-        await button.click({ timeout: 3000 });
-      } catch {
-        await page.mouse.click(point.x, point.y);
-      }
+      await button.click({ timeout: 3000 });
       liveLog(`${options.testCase.buttonName} 버튼을 누름`);
       stage = "query";
       if (responseWait) {

@@ -1,11 +1,14 @@
 export const CONTROL_KIND = {
   text: "text",
+  password: "password",
+  textarea: "textarea",
   select: "select",
   radio: "radio",
   checkbox: "checkbox",
   date: "date",
   dateRange: "date_range",
   combobox: "combobox",
+  file: "file",
 } as const;
 
 export type ControlKind = (typeof CONTROL_KIND)[keyof typeof CONTROL_KIND];
@@ -13,6 +16,8 @@ export type ControlKind = (typeof CONTROL_KIND)[keyof typeof CONTROL_KIND];
 const CONTROL_ALIASES: Record<string, ControlKind> = {
   text: CONTROL_KIND.text,
   input: CONTROL_KIND.text,
+  password: CONTROL_KIND.password,
+  textarea: CONTROL_KIND.textarea,
   select: CONTROL_KIND.select,
   dropdown: CONTROL_KIND.select,
   radio: CONTROL_KIND.radio,
@@ -24,6 +29,7 @@ const CONTROL_ALIASES: Record<string, ControlKind> = {
   daterange: CONTROL_KIND.dateRange,
   combobox: CONTROL_KIND.combobox,
   "dropdown-button": CONTROL_KIND.combobox,
+  file: CONTROL_KIND.file,
 };
 
 export function parseControlKind(raw: unknown): ControlKind | undefined {

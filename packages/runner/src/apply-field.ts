@@ -72,6 +72,54 @@ async function applyTextField(
   return found;
 }
 
+async function applyPasswordField(
+  page: Page,
+  target: string,
+  value: string,
+): Promise<Locator> {
+  const pattern = labelPattern(target);
+  const found = await firstVisible([
+    page.getByLabel(pattern),
+    page.getByPlaceholder(pattern),
+    page.locator(`input[type="password"]`),
+  ]);
+  if (!found) throw new Error(`${target} 비밀번호 입력란을 찾지 못했습니다.`);
+  await found.fill(value);
+  return found;
+}
+
+async function applyTextareaField(
+  page: Page,
+  target: string,
+  value: string,
+): Promise<Locator> {
+  const pattern = labelPattern(target);
+  const found = await firstVisible([
+    page.getByLabel(pattern),
+    page.getByPlaceholder(pattern),
+    page.getByRole("textbox", { name: pattern }),
+    page.locator(`textarea`),
+  ]);
+  if (!found) throw new Error(`${target} 텍스트 영역을 찾지 못했습니다.`);
+  await found.fill(value);
+  return found;
+}
+
+async function applyFileField(
+  page: Page,
+  target: string,
+  value: string,
+): Promise<Locator> {
+  const pattern = labelPattern(target);
+  const found = await firstVisible([
+    page.getByLabel(pattern),
+    page.locator(`input[type="file"]`),
+  ]);
+  if (!found) throw new Error(`${target} 파일 첨부 입력을 찾지 못했습니다.`);
+  if (value) await found.setInputFiles(value);
+  return found;
+}
+
 export function isPageSizeField(target: string): boolean {
   return /개수|목록\s*표시|페이지당|페이지\s*크기|보기\s*개수|pageSize/iu.test(target);
 }
@@ -99,11 +147,11 @@ function fieldLabels(target: string): string[] {
 }
 
 async function selectOptionOnNative(select: Locator, value: string): Promise<void> {
-  await select.selectOption({ label: value }).catch(async () => {
-    await select.selectOption({ value }).catch(async () => {
-      await select.selectOption({ index: 0 });
-    });
-  });
+  const byLabel = await select.selectOption({ label: value }).then(() => true).catch(() => false);
+  if (byLabel) return;
+  const byValue = await select.selectOption({ value }).then(() => true).catch(() => false);
+  if (byValue) return;
+  throw new Error(`선택 목록에서 "${value}" 항목을 찾지 못했습니다.`);
 }
 
 async function locateNativeSelect(
@@ -201,13 +249,21 @@ async function applyUsingSelectorHint(
     case CONTROL_KIND.date:
       return applyCustomDateRange(page, input.target, value, sel);
     case CONTROL_KIND.text:
+    case CONTROL_KIND.password:
+    case CONTROL_KIND.textarea:
       await el.fill(value);
       return el;
     case CONTROL_KIND.radio:
+    case CONTROL_KIND.checkbox:
       await el.click();
       return el;
-    default:
-      return null;
+    case CONTROL_KIND.file:
+      if (value) await el.setInputFiles(value);
+      return el;
+    default: {
+      const _exhaustive: never = control;
+      return _exhaustive;
+    }
   }
 }
 
@@ -503,17 +559,25 @@ export async function applyFieldValue(
   }
 
   switch (control) {
+    case CONTROL_KIND.text:
+      log(`${input.target} 입력란에 ${value ? "값을 넣습니다" : "비웁니다"}`);
+      locator = await applyTextField(page, input.target, value);
+      break;
+    case CONTROL_KIND.password:
+      log(`${input.target} 비밀번호 입력란에 값을 넣습니다`);
+      locator = await applyPasswordField(page, input.target, value);
+      break;
+    case CONTROL_KIND.textarea:
+      log(`${input.target} 텍스트 영역에 ${value ? "값을 넣습니다" : "비웁니다"}`);
+      locator = await applyTextareaField(page, input.target, value);
+      break;
     case CONTROL_KIND.select:
       log(`${input.target}에서 "${value}" 선택 (HTML select 또는 드롭다운)`);
       locator = await applyChoiceField(page, input.target, value, input.options, containerSelector);
       break;
     case CONTROL_KIND.radio:
-      log(`${input.target}에서 "${value}" 선택`);
-      try {
-        locator = await applyRadio(page, input.target, value);
-      } catch {
-        locator = await applyChoiceField(page, input.target, value, input.options, containerSelector);
-      }
+      log(`${input.target}에서 "${value}" 라디오 선택`);
+      locator = await applyRadio(page, input.target, value);
       break;
     case CONTROL_KIND.checkbox:
       log(`${input.target} 체크박스 ${value || "선택"} 적용`);
@@ -531,10 +595,14 @@ export async function applyFieldValue(
       log(`${input.target} 드롭다운에서 "${value}" 선택`);
       locator = await applyChoiceField(page, input.target, value, input.options, containerSelector);
       break;
-    default:
-      log(`${input.target} 입력란에 ${value ? "값을 넣습니다" : "비웁니다"}`);
-      locator = await applyTextField(page, input.target, value);
+    case CONTROL_KIND.file:
+      log(`${input.target} 파일 첨부`);
+      locator = await applyFileField(page, input.target, value);
       break;
+    default: {
+      const _exhaustive: never = control;
+      throw new Error(`지원하지 않는 컨트롤 타입입니다: ${String(_exhaustive)}`);
+    }
   }
 
   await pointAt(locator);

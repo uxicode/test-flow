@@ -10,6 +10,10 @@ import {
   type AnalysisView,
   type LogEvent,
   type RunView,
+  type ServerConfig,
+  type TcFile,
+  type TcFileListView,
+  type TcFileMeta,
   type TestCase,
 } from "./lib/api";
 
@@ -28,9 +32,6 @@ function statusClass(label: string): string {
 }
 
 const STORED_FIGMA_URL = "testflow.figma-url";
-const STORED_FIGMA_TOKEN = "testflow.figma-token";
-const STORED_ACCOUNT_EMAIL = "testflow.account-email";
-const STORED_ACCOUNT_PASSWORD = "testflow.account-password";
 const STORED_START_URL = "testflow.start-url";
 const ACCOUNT_EMAIL = /이메일|아이디|email/iu;
 const ACCOUNT_PASSWORD = /비밀번호|패스워드|password/iu;
@@ -75,7 +76,6 @@ function writeSession(key: string, value: string): void {
 
 export function App() {
   const [figmaUrl, setFigmaUrl] = useState(() => readStored(STORED_FIGMA_URL));
-  const [token, setToken] = useState(() => readStored(STORED_FIGMA_TOKEN));
   const [specText, setSpecText] = useState("");
   const [jobId, setJobId] = useState("");
   const [status, setStatus] = useState("");
@@ -83,8 +83,6 @@ export function App() {
   const [screenCount, setScreenCount] = useState(0);
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [startUrl, setStartUrl] = useState(() => readSession(STORED_START_URL) || "https://");
-  const [accountEmail, setAccountEmail] = useState(() => readStored(STORED_ACCOUNT_EMAIL));
-  const [accountPassword, setAccountPassword] = useState(() => readStored(STORED_ACCOUNT_PASSWORD));
   const [values, setValues] = useState<Record<string, Record<string, string>>>({});
   const [runIds, setRunIds] = useState<Record<string, string>>({});
   const [caseState, setCaseState] = useState<Record<string, string>>({});
@@ -95,6 +93,9 @@ export function App() {
   /** `${caseId}:${inputTarget}` 또는 `${caseId}:__option_container__` */
   const [inspectingFieldKey, setInspectingFieldKey] = useState("");
   const [editingInputKey, setEditingInputKey] = useState("");
+  const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
+  const [tcFiles, setTcFiles] = useState<TcFileMeta[]>([]);
+  const [showTcFiles, setShowTcFiles] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -108,20 +109,14 @@ export function App() {
   }, [figmaUrl]);
 
   useEffect(() => {
-    writeStored(STORED_FIGMA_TOKEN, token);
-  }, [token]);
-
-  useEffect(() => {
-    writeStored(STORED_ACCOUNT_EMAIL, accountEmail);
-  }, [accountEmail]);
-
-  useEffect(() => {
-    writeStored(STORED_ACCOUNT_PASSWORD, accountPassword);
-  }, [accountPassword]);
-
-  useEffect(() => {
     writeSession(STORED_START_URL, startUrl);
   }, [startUrl]);
+
+  useEffect(() => {
+    void getJson<ServerConfig>("/api/config")
+      .then((cfg) => setServerConfig(cfg))
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (!jobId) return;
@@ -180,6 +175,25 @@ export function App() {
     setScreenCount(view.screens.length);
   }
 
+  async function loadTcFileList() {
+    const res = await getJson<TcFileListView>("/api/tc-files");
+    setTcFiles(res.files);
+  }
+
+  async function handleLoadTcFile(fileId: string) {
+    try {
+      const tcFile = await getJson<TcFile>(`/api/tc-files/${fileId}`);
+      setCases(tcFile.cases);
+      setJobId(tcFile.jobId);
+      setStatus("completed");
+      setLogs([]);
+      setScreenCount(0);
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "TC 파일 로드에 실패했습니다.");
+    }
+  }
+
   async function startAnalysis(body: Record<string, string>, action: "analyze" | "text") {
     const startedAt = Date.now();
     setBusyAction(action);
@@ -207,7 +221,7 @@ export function App() {
   }
 
   async function handleAnalyze() {
-    await startAnalysis({ url: figmaUrl, token }, "analyze");
+    await startAnalysis({ url: figmaUrl }, "analyze");
   }
 
   async function handleAnalyzeText() {
@@ -245,13 +259,7 @@ export function App() {
   }
 
   function mergedValues(testCase: TestCase): Record<string, string> {
-    const own = { ...(values[testCase.id] ?? {}) };
-    for (const input of testCase.inputs) {
-      if (own[input.target]?.trim()) continue;
-      if (ACCOUNT_EMAIL.test(input.target)) own[input.target] = accountEmail;
-      if (ACCOUNT_PASSWORD.test(input.target)) own[input.target] = accountPassword;
-    }
-    return own;
+    return { ...(values[testCase.id] ?? {}) };
   }
 
   function updateTestCase(caseId: string, patch: Partial<TestCase>) {
@@ -290,8 +298,6 @@ export function App() {
     try {
       const res = await postJson<{ selector: string }>("/api/inspect-selector", {
         startUrl,
-        loginEmail: accountEmail,
-        loginPassword: accountPassword,
       });
       if (!res.selector) {
         setErrorMessage("셀렉터가 적용되지 않았습니다. 브라우저에서 요소를 클릭한 뒤 [적용하기]를 눌러야 합니다.");
@@ -321,8 +327,6 @@ export function App() {
         caseId: testCase.id,
         startUrl,
         values: mergedValues(testCase),
-        loginEmail: accountEmail,
-        loginPassword: accountPassword,
         apiPath: testCase.apiPath,
         assert: testCase.assert,
         optionContainerSelector: testCase.optionContainerSelector,
@@ -371,9 +375,9 @@ export function App() {
       return input.value || "없음";
     }
     const typed = documentValues[testCase.id]?.[input.target]?.trim() ?? "";
-    if (ACCOUNT_PASSWORD.test(input.target)) return typed ? "입력됨" : "상단 공통 입력";
+    if (ACCOUNT_PASSWORD.test(input.target)) return typed ? "입력됨" : "서버 환경변수 사용";
     if (typed) return typed;
-    if (isAccountField(input.target)) return "상단 공통 입력";
+    if (isAccountField(input.target)) return "서버 환경변수 사용";
     return "실행 시 입력";
   }
 
@@ -393,6 +397,22 @@ export function App() {
 
       <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
         <h2 className="text-sm font-medium">기획서 분석</h2>
+
+        {serverConfig && (
+          <div className="flex gap-3 text-xs">
+            <span
+              className={serverConfig.hasFigmaToken ? "text-emerald-400" : "text-amber-400"}
+            >
+              {serverConfig.hasFigmaToken ? "✓ Figma 토큰 설정됨" : "⚠ FIGMA_TOKEN 환경변수 미설정"}
+            </span>
+            <span
+              className={serverConfig.hasTestAccount ? "text-emerald-400" : "text-amber-400"}
+            >
+              {serverConfig.hasTestAccount ? "✓ 테스트 계정 설정됨" : "⚠ TEST_ACCOUNT_* 환경변수 미설정"}
+            </span>
+          </div>
+        )}
+
         <div className="flex items-end gap-3">
           <label className="min-w-0 flex-1 space-y-1 text-xs text-slate-400">
             Figma URL
@@ -404,17 +424,6 @@ export function App() {
               onChange={(event) => setFigmaUrl(event.target.value)}
             />
           </label>
-          <label className="w-56 shrink-0 space-y-1 text-xs text-slate-400">
-            액세스 토큰
-            <input
-              type="password"
-              autoComplete="off"
-              className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
-              placeholder="엑세스 토큰"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-            />
-          </label>
         </div>
         <div className="flex gap-2">
           <ActionButton
@@ -422,7 +431,7 @@ export function App() {
             variant="primary"
             busy={busyAction === "analyze"}
             busyLabel="피그마 분석 중…"
-            disabled={isWorking || !figmaUrl || !token}
+            disabled={isWorking || !figmaUrl || !serverConfig?.hasFigmaToken}
             onClick={() => void handleAnalyze()}
           />
           <ActionButton
@@ -466,45 +475,54 @@ export function App() {
         ) : null}
       </section>
 
+      <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium">저장된 TC 파일</h2>
+          <button
+            type="button"
+            className="text-xs text-sky-400 hover:text-sky-300"
+            onClick={() => {
+              setShowTcFiles((prev) => !prev);
+              if (!showTcFiles) void loadTcFileList();
+            }}
+          >
+            {showTcFiles ? "접기" : "목록 보기"}
+          </button>
+        </div>
+        {showTcFiles && (
+          tcFiles.length === 0 ? (
+            <p className="text-xs text-slate-500">저장된 TC 파일이 없습니다.</p>
+          ) : (
+            <ul className="space-y-1">
+              {tcFiles.map((file) => (
+                <li key={file.fileId} className="flex items-center justify-between gap-3 rounded border border-slate-700 px-3 py-2 text-xs">
+                  <span className="text-slate-300">
+                    {file.label ?? file.fileId}
+                    <span className="ml-2 text-slate-500">TC {file.caseCount}개 · {new Date(file.savedAt).toLocaleString("ko-KR")}</span>
+                  </span>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded bg-sky-700/40 px-2 py-0.5 text-sky-300 hover:bg-sky-700/60"
+                    onClick={() => void handleLoadTcFile(file.fileId)}
+                  >
+                    불러오기
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )
+        )}
+      </section>
+
       {errorMessage ? <p className="text-sm text-rose-300">{errorMessage}</p> : null}
 
       <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
         <h2 className="text-sm font-medium">실행</h2>
         <p className="text-xs text-slate-400">
-          어드민처럼 로그인이 필요하면 아래 계정으로 먼저 들어간 뒤 TC를 실행합니다. 시작 주소는 로그인 페이지가 아니라
-          검사할 화면 주소로 넣으세요. 로그인 TC는 이 단계를 건너뜁니다.
+          로그인이 필요한 테스트는 서버의 <code className="text-slate-300">TEST_ACCOUNT_EMAIL</code> /
+          <code className="text-slate-300"> TEST_ACCOUNT_PASSWORD</code> 환경변수로 설정한 계정을 사용합니다.
+          시작 주소는 로그인 페이지가 아니라 검사할 화면 주소로 넣으세요.
         </p>
-        <div className="flex items-end gap-3">
-          <label className="min-w-0 flex-1 space-y-1 text-xs text-slate-400">
-            이메일 또는 아이디
-            <input
-              className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
-              value={accountEmail}
-              autoComplete="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              data-1p-ignore="true"
-              data-lpignore="true"
-              readOnly={editingInputKey !== "shared:email"}
-              onFocus={() => setEditingInputKey("shared:email")}
-              onChange={(event) => setAccountEmail(event.target.value)}
-            />
-          </label>
-          <label className="w-56 shrink-0 space-y-1 text-xs text-slate-400">
-            비밀번호
-            <input
-              type="password"
-              className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
-              value={accountPassword}
-              autoComplete="off"
-              data-1p-ignore="true"
-              data-lpignore="true"
-              readOnly={editingInputKey !== "shared:password"}
-              onFocus={() => setEditingInputKey("shared:password")}
-              onChange={(event) => setAccountPassword(event.target.value)}
-            />
-          </label>
-        </div>
         {cases.length > 0 ? <TcDocument cases={cases} values={documentValues} /> : null}
         <input
           className="w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm"
@@ -652,7 +670,7 @@ export function App() {
                           type={
                             input.control === "date"
                               ? "date"
-                              : /비밀번호/.test(input.target)
+                              : input.control === "password" || /비밀번호/.test(input.target)
                                 ? "password"
                                 : "text"
                           }

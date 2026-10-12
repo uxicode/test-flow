@@ -1,7 +1,9 @@
 node_modules
 dist
 data/**
-!data/**/.gitkeep
+!data/
+!data/tc/
+!data/tc/.gitkeep
 *.log
 .DS_Store
 .env

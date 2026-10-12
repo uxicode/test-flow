@@ -22,3 +22,12 @@ export {
   type TestCase,
 } from "./build-test-cases.js";
 export { casesToMarkdown, casesToXlsx } from "./export-document.js";
+export {
+  TC_FILE_VERSION,
+  saveTcFile,
+  loadTcFile,
+  listTcFiles,
+  deleteTcFile,
+  type TcFile,
+  type TcFileMeta,
+} from "./tc-file.js";

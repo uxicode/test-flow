@@ -1,12 +1,21 @@
-import type { TcInput, TestCase, TcTableAssert } from "@testflow/tc";
+import type { TcFile, TcFileMeta, TcInput, TcTableAssert, TestCase } from "@testflow/tc";
 
-export type { TcInput, TestCase, TcTableAssert };
+export type { TcFile, TcFileMeta, TcInput, TcTableAssert, TestCase };
 
 export interface AnalysisView {
   jobId: string;
   status: string;
   screens: Array<{ screenKey: string }>;
   cases: TestCase[];
+}
+
+export interface ServerConfig {
+  hasFigmaToken: boolean;
+  hasTestAccount: boolean;
+}
+
+export interface TcFileListView {
+  files: TcFileMeta[];
 }
 
 export interface LogEvent {
