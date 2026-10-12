@@ -1,5 +1,6 @@
 import type { Page } from "playwright";
 import { CONTROL_KIND, type ControlKind } from "@testflow/tc";
+import { COLLECT_ELEMENTS_SCRIPT } from "./collect-elements-script.js";
 import {
   ELEMENT_MAP_VERSION,
   normalizeUrl,
@@ -26,178 +27,6 @@ interface RawElement {
   cssPath: string;
   nativeOptions: string[];
   rect: { x: number; y: number; width: number; height: number };
-}
-
-/** 브라우저 내에서 실행되는 순수 JS 함수 — 모든 대화형 요소를 수집한다. */
-function collectElementsFromDOM(): RawElement[] {
-  function getAccessibleName(el: Element): string {
-    const ariaLabel = el.getAttribute("aria-label");
-    if (ariaLabel?.trim()) return ariaLabel.trim();
-
-    const labelledby = el.getAttribute("aria-labelledby");
-    if (labelledby) {
-      const parts = labelledby
-        .split(/\s+/)
-        .map((id) => document.getElementById(id)?.textContent?.trim())
-        .filter(Boolean);
-      if (parts.length) return parts.join(" ");
-    }
-
-    const id = el.getAttribute("id");
-    if (id) {
-      try {
-        const lbl = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-        if (lbl?.textContent?.trim()) return lbl.textContent.trim();
-      } catch {
-        // ignore
-      }
-    }
-
-    const wrapping = el.closest("label");
-    if (wrapping && wrapping !== el) {
-      const clone = wrapping.cloneNode(true) as Element;
-      clone.querySelectorAll("input,select,textarea").forEach((c) => c.remove());
-      const text = clone.textContent?.trim();
-      if (text) return text;
-    }
-
-    if (el.tagName === "BUTTON" || el.getAttribute("role") === "button") {
-      const txt = (el as HTMLElement).innerText?.trim() || el.getAttribute("title")?.trim() || "";
-      if (txt) return txt;
-    }
-
-    return (
-      el.getAttribute("placeholder")?.trim() ||
-      el.getAttribute("title")?.trim() ||
-      el.getAttribute("name")?.trim() ||
-      ""
-    );
-  }
-
-  function isVisible(el: Element): boolean {
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return false;
-    if (rect.bottom < 0 || rect.top > window.innerHeight) return false;
-    if (rect.right < 0 || rect.left > window.innerWidth) return false;
-    try {
-      const style = window.getComputedStyle(el);
-      if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") return false;
-    } catch {
-      return false;
-    }
-    return true;
-  }
-
-  function getTestId(el: Element): string | null {
-    return (
-      el.getAttribute("data-testid") ||
-      el.getAttribute("data-test") ||
-      el.getAttribute("data-cy") ||
-      el.getAttribute("data-qa") ||
-      null
-    );
-  }
-
-  function computeCssPath(el: Element): string {
-    const id = el.getAttribute("id");
-    if (id && /^[A-Za-z][\w-]*$/u.test(id)) return `#${id}`;
-
-    const testId = getTestId(el);
-    if (testId) return `[data-testid="${testId}"]`;
-
-    const parts: string[] = [];
-    let cur: Element | null = el;
-    let depth = 0;
-    while (cur && cur !== document.body && depth < 6) {
-      const tag = cur.tagName.toLowerCase();
-      const cid = cur.getAttribute("id");
-      if (cid && /^[A-Za-z][\w-]*$/u.test(cid)) {
-        parts.unshift(`#${cid}`);
-        break;
-      }
-      const ctid = getTestId(cur);
-      if (ctid) {
-        parts.unshift(`[data-testid="${ctid}"]`);
-        break;
-      }
-      const parent: Element | null = cur.parentElement;
-      if (parent) {
-        const curTag = cur.tagName;
-        const siblings = Array.from(parent.children).filter((s: Element) => s.tagName === curTag);
-        if (siblings.length > 1) {
-          parts.unshift(`${tag}:nth-of-type(${siblings.indexOf(cur) + 1})`);
-        } else {
-          parts.unshift(tag);
-        }
-      } else {
-        parts.unshift(tag);
-      }
-      cur = parent;
-      depth++;
-    }
-    return parts.join(" > ");
-  }
-
-  const seen = new Set<Element>();
-  const results: RawElement[] = [];
-
-  const QUERY_SELECTORS = [
-    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"])',
-    "textarea",
-    "select",
-    '[role="combobox"]:not(input)',
-    '[role="radio"]:not(input)',
-    '[role="checkbox"]:not(input)',
-    '[aria-haspopup="listbox"]:not(select):not(input)',
-    '[aria-haspopup="menu"]:not(select):not(input)',
-  ];
-
-  const allEls = new Set<Element>();
-  for (const sel of QUERY_SELECTORS) {
-    try {
-      document.querySelectorAll(sel).forEach((e) => allEls.add(e));
-    } catch {
-      // 잘못된 셀렉터는 무시
-    }
-  }
-
-  for (const el of allEls) {
-    if (seen.has(el) || !isVisible(el)) continue;
-    seen.add(el);
-
-    const label = getAccessibleName(el);
-    const tag = el.tagName.toLowerCase();
-    const testId = getTestId(el);
-    const ariaLabel = el.getAttribute("aria-label");
-    const placeholder = el.getAttribute("placeholder");
-    const domId = el.getAttribute("id");
-    const rect = el.getBoundingClientRect();
-
-    const nativeOptions =
-      tag === "select"
-        ? Array.from((el as HTMLSelectElement).options)
-            .map((o) => o.text.trim())
-            .filter(Boolean)
-        : [];
-
-    results.push({
-      label,
-      rawTag: tag,
-      rawType: el.getAttribute("type"),
-      rawRole: el.getAttribute("role"),
-      ariaHaspopup: el.getAttribute("aria-haspopup"),
-      testId,
-      ariaLabel,
-      labelText: null,
-      placeholder,
-      domId,
-      cssPath: computeCssPath(el),
-      nativeOptions,
-      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-    });
-  }
-
-  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +274,7 @@ export async function exploreScreen(page: Page, options: ExploreOptions): Promis
 
   // DOM에서 대화형 요소 수집
   log("대화형 요소 수집 중...");
-  const rawElements = await page.evaluate(collectElementsFromDOM);
+  const rawElements = await page.evaluate(COLLECT_ELEMENTS_SCRIPT) as RawElement[];
   log(`${rawElements.length}개 요소 발견`);
 
   // 요소별 엔트리 빌드

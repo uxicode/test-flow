@@ -307,7 +307,7 @@ async function pointAt(page: Page, locator: Locator): Promise<{ x: number; y: nu
       "animation:tf-ripple 0.65s cubic-bezier(0,0.55,0.45,1) forwards",
     ].join(";");
     document.documentElement.append(ripple);
-    setTimeout(() => ripple.remove(), 750);
+    window.setTimeout(ripple.remove.bind(ripple), 750);
   }, { rx: x, ry: y }).catch(() => undefined);
 
   // 대상 요소 하이라이트 (바이올렛 테마)

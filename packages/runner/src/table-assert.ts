@@ -15,27 +15,32 @@ function clean(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
 }
 
+/** 함수로 넘기면 tsx의 `__name`이 브라우저에서 ReferenceError가 난다. */
+const EXTRACT_TABLES_SCRIPT = `(() => {
+  function text(el) {
+    return (el.textContent || "").replace(/\\s+/g, " ").trim();
+  }
+  return Array.prototype.map.call(
+    document.querySelectorAll('table, [role="table"], [role="grid"]'),
+    function (table) {
+      var headers = Array.prototype.map.call(
+        table.querySelectorAll('thead th, thead td, [role="columnheader"]'),
+        text,
+      );
+      var rows = Array.prototype.filter.call(
+        table.querySelectorAll('tbody tr, [role="row"]'),
+        function (row) { return row.querySelector('td, [role="cell"], [role="gridcell"]'); },
+      ).map(function (row) {
+        return Array.prototype.map.call(row.querySelectorAll('td, [role="cell"], [role="gridcell"]'), text);
+      });
+      return { headers: headers, rows: rows };
+    },
+  );
+})()`;
+
 /** 화면의 모든 표(table 태그, role=table/grid)에서 헤더와 본문 행 텍스트를 뽑는다. */
 export async function extractTables(page: Page): Promise<ExtractedTable[]> {
-  return page.evaluate(() => {
-    const text = (el: Element): string => (el.textContent ?? "").replace(/\s+/g, " ").trim();
-    const tables = Array.from(
-      document.querySelectorAll('table, [role="table"], [role="grid"]'),
-    );
-    return tables.map((table) => {
-      const headerCells = Array.from(
-        table.querySelectorAll('thead th, thead td, [role="columnheader"]'),
-      );
-      const headers = headerCells.map(text);
-      const rowEls = Array.from(
-        table.querySelectorAll('tbody tr, [role="row"]'),
-      ).filter((row) => row.querySelector('td, [role="cell"], [role="gridcell"]'));
-      const rows = rowEls.map((row) =>
-        Array.from(row.querySelectorAll('td, [role="cell"], [role="gridcell"]')).map(text),
-      );
-      return { headers, rows };
-    });
-  });
+  return page.evaluate(EXTRACT_TABLES_SCRIPT);
 }
 
 function matches(cell: string, assert: TcTableAssert): boolean {
