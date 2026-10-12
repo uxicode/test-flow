@@ -18,6 +18,49 @@ export interface TcFileListView {
   files: TcFileMeta[];
 }
 
+export interface ExploreView {
+  exploreId: string;
+  url: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  mapId?: string;
+  error?: string;
+}
+
+export interface LocatorCandidate {
+  strategy: string;
+  value: string;
+}
+
+export interface ElementEntry {
+  label: string;
+  controlKind: string;
+  locators: LocatorCandidate[];
+  dropdownOptionContainer: "inline" | "portal" | "listbox" | null;
+  pinnedSelector?: string;
+}
+
+export interface ScreenElementMap {
+  $version: number;
+  url: string;
+  normalizedUrl: string;
+  exploredAt: string;
+  screenTitle: string;
+  elements: ElementEntry[];
+  queryApiUrls: string[];
+}
+
+export interface ElementMapMeta {
+  mapId: string;
+  url: string;
+  exploredAt: string;
+  screenTitle: string;
+  elementCount: number;
+}
+
+export interface ElementMapListView {
+  maps: ElementMapMeta[];
+}
+
 export interface LogEvent {
   channelId: string;
   message: string;

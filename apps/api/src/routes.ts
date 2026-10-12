@@ -2,7 +2,16 @@ import "@fastify/websocket";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { createOllamaWorker, runAnalysisJob, textModel, visionModel } from "@testflow/analyze";
-import { inspectSelector, runTestCase } from "@testflow/runner";
+import {
+  deleteElementMap,
+  findLatestMapByUrl,
+  inspectSelector,
+  listElementMaps,
+  loadElementMap,
+  runExploreJob,
+  runTestCase,
+  upsertPinnedSelector,
+} from "@testflow/runner";
 import {
   buildTestCases,
   deleteTcFile,
@@ -27,7 +36,17 @@ interface RunState {
   controller: AbortController;
 }
 
+interface ExploreState {
+  exploreId: string;
+  url: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  mapId?: string;
+  error?: string;
+  controller: AbortController;
+}
+
 const runs = new Map<string, RunState>();
+const explores = new Map<string, ExploreState>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -137,6 +156,108 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // ── 화면 탐색 (Phase 2) ────────────────────────────────────────────────────
+
+  app.post("/api/explore", async (req, reply) => {
+    const body = isRecord(req.body) ? req.body : {};
+    const startUrl = typeof body.startUrl === "string" ? body.startUrl.trim() : "";
+    if (!/^https?:\/\//iu.test(startUrl)) {
+      return reply.code(400).send({ error: "http(s) 시작 URL이 필요합니다." });
+    }
+    const exploreId = randomUUID();
+    const controller = new AbortController();
+    const state: ExploreState = { exploreId, url: startUrl, status: "running", controller };
+    explores.set(exploreId, state);
+
+    const loginEmail = process.env.TEST_ACCOUNT_EMAIL?.trim() ?? "";
+    const loginPassword = process.env.TEST_ACCOUNT_PASSWORD ?? "";
+    const login = loginEmail && loginPassword ? { email: loginEmail, password: loginPassword } : undefined;
+
+    void (async () => {
+      try {
+        const mapId = await runExploreJob({
+          startUrl,
+          login,
+          signal: controller.signal,
+          headless: true,
+          onLog: (msg) => publishLog(exploreId, msg),
+        });
+        state.status = "completed";
+        state.mapId = mapId;
+        publishLog(exploreId, `완료 (mapId: ${mapId})`);
+      } catch (error) {
+        if (controller.signal.aborted) {
+          state.status = "cancelled";
+        } else {
+          state.status = "failed";
+          state.error = error instanceof Error ? error.message : "탐색 실패";
+          publishLog(exploreId, `오류: ${state.error}`);
+        }
+      }
+    })();
+
+    return reply.code(202).send({ exploreId });
+  });
+
+  app.get("/api/explore/:exploreId", async (req, reply) => {
+    const { exploreId } = req.params as { exploreId: string };
+    const state = explores.get(exploreId);
+    if (!state) return reply.code(404).send({ error: "탐색 작업을 찾지 못했습니다." });
+    return {
+      exploreId: state.exploreId,
+      url: state.url,
+      status: state.status,
+      mapId: state.mapId,
+      error: state.error,
+    };
+  });
+
+  app.post("/api/explore/:exploreId/cancel", async (req, reply) => {
+    const { exploreId } = req.params as { exploreId: string };
+    const state = explores.get(exploreId);
+    if (!state) return reply.code(404).send({ error: "탐색 작업을 찾지 못했습니다." });
+    if (state.status === "running") {
+      state.controller.abort();
+      state.status = "cancelled";
+    }
+    return { ok: true };
+  });
+
+  // ── 요소 맵 CRUD ──────────────────────────────────────────────────────────
+
+  app.get("/api/element-maps", async () => {
+    return { maps: listElementMaps() };
+  });
+
+  app.get("/api/element-maps/by-url", async (req, reply) => {
+    const url = typeof (req.query as Record<string, unknown>).url === "string"
+      ? (req.query as Record<string, string>).url.trim()
+      : "";
+    if (!url) return reply.code(400).send({ error: "url 파라미터가 필요합니다." });
+    const found = findLatestMapByUrl(url);
+    if (!found) return reply.code(404).send({ error: "해당 URL의 요소 맵이 없습니다." });
+    return { mapId: found.mapId, map: found.map };
+  });
+
+  app.get("/api/element-maps/:mapId", async (req, reply) => {
+    const { mapId } = req.params as { mapId: string };
+    try {
+      return loadElementMap(mapId);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : "요소 맵 로드 실패" });
+    }
+  });
+
+  app.delete("/api/element-maps/:mapId", async (req, reply) => {
+    const { mapId } = req.params as { mapId: string };
+    try {
+      deleteElementMap(mapId);
+      return { ok: true };
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : "요소 맵 삭제 실패" });
+    }
+  });
+
   app.post("/api/analysis/:jobId/cancel", async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
     const job = getJob(jobId);
@@ -236,12 +357,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!/^https?:\/\//iu.test(startUrl)) {
       return reply.code(400).send({ error: "http(s) 시작 URL이 필요합니다." });
     }
+    const label = typeof body.label === "string" ? body.label.trim() : "";
     const loginEmail = process.env.TEST_ACCOUNT_EMAIL?.trim() ?? "";
     const loginPassword = process.env.TEST_ACCOUNT_PASSWORD ?? "";
     const login = loginEmail && loginPassword ? { email: loginEmail, password: loginPassword } : undefined;
 
     try {
       const selector = await inspectSelector({ startUrl, login });
+      // 요소 맵에도 저장 (label이 있을 때)
+      if (selector && label && label !== "__option_container__") {
+        try {
+          upsertPinnedSelector(startUrl, label, selector);
+        } catch {
+          // 요소 맵 저장 실패는 셀렉터 반환에 영향을 주지 않는다.
+        }
+      }
       return { selector };
     } catch (error) {
       const message = error instanceof Error ? error.message : "셀렉터 추출 실패";
