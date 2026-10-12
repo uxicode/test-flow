@@ -3,7 +3,17 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { createOllamaWorker, runAnalysisJob, textModel, visionModel } from "@testflow/analyze";
 import { inspectSelector, runTestCase } from "@testflow/runner";
-import { buildTestCases, parseControlKind, type TestCase, type TcInput, type TcTableAssert } from "@testflow/tc";
+import {
+  buildTestCases,
+  deleteTcFile,
+  listTcFiles,
+  loadTcFile,
+  parseControlKind,
+  saveTcFile,
+  type TcInput,
+  type TcTableAssert,
+  type TestCase,
+} from "@testflow/tc";
 import { getJob, saveJob } from "./job-store.js";
 import { publishLog, readLogs, subscribeLog } from "./log-hub.js";
 
@@ -26,13 +36,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/health", async () => ({ ok: true }));
 
+  app.get("/api/config", async () => {
+    return {
+      hasFigmaToken: Boolean(process.env.FIGMA_TOKEN?.trim()),
+      hasTestAccount: Boolean(process.env.TEST_ACCOUNT_EMAIL?.trim() && process.env.TEST_ACCOUNT_PASSWORD?.trim()),
+    };
+  });
+
   app.post("/api/analysis", async (req, reply) => {
     const body = isRecord(req.body) ? req.body : {};
     const url = typeof body.url === "string" ? body.url : "";
-    const token = typeof body.token === "string" ? body.token : "";
     const specText = typeof body.specText === "string" ? body.specText : "";
-    if ((!url || !token) && !specText.trim())
-      return reply.code(400).send({ error: "Figma URL·토큰 또는 텍스트 기획서가 필요합니다." });
+    const token = process.env.FIGMA_TOKEN?.trim() ?? "";
+    if ((!url || !token) && !specText.trim()) {
+      if (url && !token)
+        return reply.code(400).send({ error: "Figma 토큰이 설정되지 않았습니다. 서버의 FIGMA_TOKEN 환경변수를 확인하세요." });
+      return reply.code(400).send({ error: "Figma URL 또는 텍스트 기획서가 필요합니다." });
+    }
     const jobId = randomUUID();
     const controller = new AbortController();
     saveJob({ jobId, status: "fetching", cases: [], controller });
@@ -58,6 +78,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           if (event.status === "completed" || event.status === "cancelled") {
             job.cases = buildTestCases(event.result.screens);
             publishLog(jobId, `TC ${job.cases.length}개 작성`);
+            try {
+              saveTcFile(jobId, job.cases);
+            } catch {
+              // TC 파일 저장 실패는 분석 결과에 영향을 주지 않는다.
+            }
           }
         }
       },
@@ -68,6 +93,48 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       if (job) job.status = "failed";
     });
     return reply.code(202).send({ jobId });
+  });
+
+  app.get("/api/tc-files", async () => {
+    return { files: listTcFiles() };
+  });
+
+  app.get("/api/tc-files/:fileId", async (req, reply) => {
+    const { fileId } = req.params as { fileId: string };
+    try {
+      const tcFile = loadTcFile(fileId);
+      return tcFile;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "TC 파일 로드 실패";
+      return reply.code(404).send({ error: message });
+    }
+  });
+
+  app.post("/api/tc-files", async (req, reply) => {
+    const body = isRecord(req.body) ? req.body : {};
+    const jobId = typeof body.jobId === "string" ? body.jobId : "";
+    const label = typeof body.label === "string" ? body.label.trim() : undefined;
+    if (!jobId) return reply.code(400).send({ error: "jobId가 필요합니다." });
+    const job = getJob(jobId);
+    if (!job || job.cases.length === 0) return reply.code(404).send({ error: "저장할 TC가 없습니다." });
+    try {
+      const meta = saveTcFile(jobId, job.cases, label);
+      return reply.code(201).send(meta);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "TC 파일 저장 실패";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  app.delete("/api/tc-files/:fileId", async (req, reply) => {
+    const { fileId } = req.params as { fileId: string };
+    try {
+      deleteTcFile(fileId);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "TC 파일 삭제 실패";
+      return reply.code(404).send({ error: message });
+    }
   });
 
   app.post("/api/analysis/:jobId/cancel", async (req, reply) => {
@@ -100,8 +167,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           Object.entries(body.values).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
         )
       : {};
-    const loginEmail = typeof body.loginEmail === "string" ? body.loginEmail.trim() : "";
-    const loginPassword = typeof body.loginPassword === "string" ? body.loginPassword : "";
+    const loginEmail = process.env.TEST_ACCOUNT_EMAIL?.trim() ?? "";
+    const loginPassword = process.env.TEST_ACCOUNT_PASSWORD ?? "";
     const login = loginEmail && loginPassword ? { email: loginEmail, password: loginPassword } : undefined;
     if (!/^https?:\/\//iu.test(startUrl))
       return reply.code(400).send({ error: "http(s) 시작 URL이 필요합니다." });
@@ -169,8 +236,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!/^https?:\/\//iu.test(startUrl)) {
       return reply.code(400).send({ error: "http(s) 시작 URL이 필요합니다." });
     }
-    const loginEmail = typeof body.loginEmail === "string" ? body.loginEmail.trim() : "";
-    const loginPassword = typeof body.loginPassword === "string" ? body.loginPassword : "";
+    const loginEmail = process.env.TEST_ACCOUNT_EMAIL?.trim() ?? "";
+    const loginPassword = process.env.TEST_ACCOUNT_PASSWORD ?? "";
     const login = loginEmail && loginPassword ? { email: loginEmail, password: loginPassword } : undefined;
 
     try {
