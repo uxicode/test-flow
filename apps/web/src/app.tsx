@@ -8,8 +8,14 @@ import {
   openLogSocket,
   postJson,
   type AnalysisView,
+  type ElementEntry,
+  type ElementMapListView,
+  type ElementMapMeta,
+  type ExploreView,
+  type LocatorCandidate,
   type LogEvent,
   type RunView,
+  type ScreenElementMap,
   type ServerConfig,
   type TcFile,
   type TcFileListView,
@@ -96,11 +102,22 @@ export function App() {
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [tcFiles, setTcFiles] = useState<TcFileMeta[]>([]);
   const [showTcFiles, setShowTcFiles] = useState(false);
+  // Phase 2: 화면 탐색
+  const [exploreUrl, setExploreUrl] = useState(() => readSession(STORED_START_URL) || "https://");
+  const [exploreId, setExploreId] = useState("");
+  const [exploreStatus, setExploreStatus] = useState<ExploreView["status"] | "">("");
+  const [exploreLogs, setExploreLogs] = useState<LogEvent[]>([]);
+  const [elementMaps, setElementMaps] = useState<ElementMapMeta[]>([]);
+  const [showElementMaps, setShowElementMaps] = useState(false);
+  const [selectedMap, setSelectedMap] = useState<ScreenElementMap | null>(null);
+  const [isBusyExplore, setIsBusyExplore] = useState(false);
+  const exploreSocketRef = useRef<WebSocket | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     return () => {
       socketRef.current?.close();
+      exploreSocketRef.current?.close();
     };
   }, []);
 
@@ -298,6 +315,7 @@ export function App() {
     try {
       const res = await postJson<{ selector: string }>("/api/inspect-selector", {
         startUrl,
+        label: inputTarget,
       });
       if (!res.selector) {
         setErrorMessage("셀렉터가 적용되지 않았습니다. 브라우저에서 요소를 클릭한 뒤 [적용하기]를 눌러야 합니다.");
@@ -340,6 +358,60 @@ export function App() {
     } finally {
       await holdBusy(startedAt);
       setRunningCaseId("");
+    }
+  }
+
+  // ── Phase 2: 화면 탐색 핸들러 ──────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!exploreId || exploreStatus === "completed" || exploreStatus === "failed" || exploreStatus === "cancelled") return;
+    const timer = window.setInterval(() => {
+      void getJson<ExploreView>(`/api/explore/${exploreId}`)
+        .then((view) => {
+          setExploreStatus(view.status);
+          if (view.status !== "running") {
+            window.clearInterval(timer);
+            if (view.status === "completed" && view.mapId) {
+              void loadElementMapDetail(view.mapId);
+            }
+          }
+        })
+        .catch(() => undefined);
+    }, 1200);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exploreId, exploreStatus]);
+
+  async function loadElementMapList() {
+    const res = await getJson<ElementMapListView>("/api/element-maps");
+    setElementMaps(res.maps);
+  }
+
+  async function loadElementMapDetail(mapId: string) {
+    const map = await getJson<ScreenElementMap>(`/api/element-maps/${mapId}`);
+    setSelectedMap(map);
+  }
+
+  async function handleStartExplore() {
+    if (!exploreUrl || !/^https?:\/\//iu.test(exploreUrl)) {
+      return;
+    }
+    setIsBusyExplore(true);
+    setExploreLogs([]);
+    setExploreStatus("running");
+    setSelectedMap(null);
+    try {
+      const created = await postJson<{ exploreId: string }>("/api/explore", { startUrl: exploreUrl });
+      setExploreId(created.exploreId);
+      exploreSocketRef.current?.close();
+      exploreSocketRef.current = openLogSocket(created.exploreId, (event) => {
+        setExploreLogs((prev) => [...prev, event]);
+      });
+    } catch (error) {
+      setExploreStatus("failed");
+      setExploreLogs([{ message: error instanceof Error ? error.message : "탐색 실패", at: new Date().toISOString(), channelId: "" }]);
+    } finally {
+      setIsBusyExplore(false);
     }
   }
 
@@ -515,6 +587,121 @@ export function App() {
       </section>
 
       {errorMessage ? <p className="text-sm text-rose-300">{errorMessage}</p> : null}
+
+      {/* Phase 2: 화면 탐색 */}
+      <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+        <h2 className="text-sm font-medium">화면 탐색 <span className="ml-1 rounded bg-sky-900/60 px-1.5 py-0.5 text-[10px] text-sky-300">Phase 2</span></h2>
+        <p className="text-xs text-slate-400">
+          시작 URL을 열고 LLM 없이 접근성 트리와 대화형 요소를 수집해 요소 맵을 만듭니다. 서버의 테스트 계정으로 자동 로그인합니다.
+        </p>
+        <div className="flex items-end gap-3">
+          <label className="min-w-0 flex-1 space-y-1 text-xs text-slate-400">
+            탐색할 URL
+            <input
+              className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+              value={exploreUrl}
+              autoComplete="off"
+              placeholder="https://앱-주소"
+              onChange={(e) => setExploreUrl(e.target.value)}
+            />
+          </label>
+          <ActionButton
+            label="탐색 시작"
+            variant="sky"
+            busy={isBusyExplore}
+            busyLabel="탐색 시작 중…"
+            disabled={isBusyExplore || exploreStatus === "running" || !exploreUrl || !/^https?:\/\//iu.test(exploreUrl)}
+            onClick={() => void handleStartExplore()}
+          />
+        </div>
+        {exploreStatus ? (
+          <p className="text-xs text-slate-400">
+            상태:{" "}
+            <span className={exploreStatus === "completed" ? "text-emerald-400" : exploreStatus === "failed" ? "text-rose-400" : "text-sky-400"}>
+              {exploreStatus}
+            </span>
+          </p>
+        ) : null}
+        {exploreLogs.length > 0 && (
+          <ul className="max-h-32 overflow-y-auto space-y-0.5 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+            {exploreLogs.map((log, i) => (
+              <li key={i} className="text-[11px] text-slate-400">{log.message}</li>
+            ))}
+          </ul>
+        )}
+        {selectedMap && (
+          <details open className="rounded border border-slate-700 bg-slate-950/60 p-2 text-xs">
+            <summary className="cursor-pointer font-medium text-slate-300">
+              요소 맵: {selectedMap.screenTitle || selectedMap.url} ({selectedMap.elements.length}개)
+            </summary>
+            <ul className="mt-2 space-y-1">
+              {selectedMap.elements.map((el: ElementEntry, i: number) => (
+                <li key={i} className="rounded border border-slate-800 px-2 py-1">
+                  <span className="font-medium text-slate-200">{el.label || "(레이블 없음)"}</span>
+                  <span className="ml-2 rounded bg-slate-800 px-1 py-0.5 text-slate-400">{el.controlKind}</span>
+                  {el.dropdownOptionContainer && (
+                    <span className="ml-2 text-slate-500">옵션: {el.dropdownOptionContainer}</span>
+                  )}
+                  {el.pinnedSelector && (
+                    <span className="ml-2 rounded bg-purple-900/40 px-1 py-0.5 text-purple-300">📌 {el.pinnedSelector}</span>
+                  )}
+                  <ol className="mt-1 list-decimal pl-4 text-slate-500">
+                    {el.locators.slice(0, 3).map((loc: LocatorCandidate, j: number) => (
+                      <li key={j}><span className="text-slate-600">[{loc.strategy}]</span> {loc.value}</li>
+                    ))}
+                  </ol>
+                </li>
+              ))}
+            </ul>
+            {selectedMap.queryApiUrls.length > 0 && (
+              <div className="mt-2 border-t border-slate-800 pt-2">
+                <p className="font-medium text-slate-400 mb-1">관찰된 조회 API:</p>
+                <ul className="space-y-0.5">
+                  {selectedMap.queryApiUrls.map((apiUrl: string, i: number) => (
+                    <li key={i} className="text-slate-500 truncate">{apiUrl}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </details>
+        )}
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-slate-500">저장된 요소 맵</span>
+          <button
+            type="button"
+            className="text-xs text-sky-400 hover:text-sky-300"
+            onClick={() => {
+              setShowElementMaps((prev) => !prev);
+              if (!showElementMaps) void loadElementMapList();
+            }}
+          >
+            {showElementMaps ? "접기" : "목록 보기"}
+          </button>
+        </div>
+        {showElementMaps && (
+          elementMaps.length === 0 ? (
+            <p className="text-xs text-slate-500">저장된 요소 맵이 없습니다.</p>
+          ) : (
+            <ul className="space-y-1">
+              {elementMaps.map((m) => (
+                <li key={m.mapId} className="flex items-center justify-between gap-3 rounded border border-slate-700 px-3 py-2 text-xs">
+                  <span className="truncate text-slate-300">
+                    {m.screenTitle || m.url}
+                    <span className="ml-2 text-slate-500">{m.elementCount}개 · {new Date(m.exploredAt).toLocaleString("ko-KR")}</span>
+                  </span>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded bg-sky-700/40 px-2 py-0.5 text-sky-300 hover:bg-sky-700/60"
+                    onClick={() => void loadElementMapDetail(m.mapId)}
+                  >
+                    보기
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )
+        )}
+      </section>
 
       <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
         <h2 className="text-sm font-medium">실행</h2>

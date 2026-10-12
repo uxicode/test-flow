@@ -4,6 +4,8 @@ data/**
 !data/
 !data/tc/
 !data/tc/.gitkeep
+!data/element-maps/
+!data/element-maps/.gitkeep
 *.log
 .DS_Store
 .env
