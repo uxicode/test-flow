@@ -1,6 +1,6 @@
 import type { AnalysisWorker } from "@testflow/analyze";
 import type { ScreenElementMap } from "@testflow/runner";
-import { type ControlKind, type TestCase } from "@testflow/tc";
+import { type ControlKind, type LocatorStrategy, type TestCase } from "@testflow/tc";
 import { MAX_MODEL_CANDIDATES, modelPickStep } from "./model-match.js";
 import {
   MATCH_VERSION,
@@ -150,7 +150,7 @@ function isAmbiguous(candidates: MatchCandidate[]): boolean {
 
 export type ResolvedLocator = {
   selector: string;
-  selectorStrategy: import("@testflow/tc").LocatorStrategy;
+  selectorStrategy: LocatorStrategy;
 };
 
 /**
