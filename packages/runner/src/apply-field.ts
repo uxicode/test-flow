@@ -1,6 +1,11 @@
 import { CONTROL_KIND, type ControlKind, type LocatorStrategy, type TcInput } from "@testflow/tc";
 import type { Locator, Page } from "playwright";
-import { applyCustomDateRange, DateRangeNotAppliedError, parseDateRangeValue } from "./date-picker.js";
+import {
+  applyCustomDateRange,
+  CalendarScopeError,
+  DateRangeNotAppliedError,
+  parseDateRangeValue,
+} from "./date-picker.js";
 
 /**
  * CSS 모듈 해시 클래스 감지 패턴.
@@ -296,15 +301,11 @@ async function applyUsingSelectorHint(
 
   const strategy: LocatorStrategy = input.selectorStrategy ?? "css";
 
-  // date/dateRange: 셀렉터를 트리거 선택자로 사용
   const control: ControlKind = input.control ?? CONTROL_KIND.text;
   if (control === CONTROL_KIND.dateRange || control === CONTROL_KIND.date) {
-    // hashed CSS module 경고: applyCustomDateRange 가 이 selector 를 트리거로 사용하므로
-    // CSS 전략이면서 해시 클래스면 label-based fallback 을 시도한다
-    if (strategy === "css" && isHashedCssModule(sel)) {
-      return null; // 해시 클래스를 날짜 트리거로 쓰지 않는다
-    }
-    return applyCustomDateRange(page, input.target, value, sel);
+    return applyCustomDateRange(page, input.target, value, {
+      containerSelector: sel,
+    });
   }
 
   // combobox/select: trigger selector 로 사용
@@ -339,11 +340,11 @@ async function applyUsingSelectorHint(
   }
 }
 
-async function applyDate(page: Page, target: string, value: string, triggerSelector?: string): Promise<Locator> {
+async function applyDate(page: Page, target: string, value: string, containerSelector?: string): Promise<Locator> {
   try {
-    return await applyCustomDateRange(page, target, value, triggerSelector);
+    return await applyCustomDateRange(page, target, value, { containerSelector });
   } catch (error) {
-    if (error instanceof DateRangeNotAppliedError) throw error;
+    if (error instanceof DateRangeNotAppliedError || error instanceof CalendarScopeError) throw error;
   }
   const pattern = labelPattern(target);
   const field = await firstVisible([
@@ -366,12 +367,14 @@ async function applyDateRange(
   page: Page,
   target: string,
   value: string,
-  triggerSelector?: string,
+  containerSelector?: string,
 ): Promise<Locator> {
   try {
-    return await applyCustomDateRange(page, target, value, triggerSelector);
+    return await applyCustomDateRange(page, target, value, { containerSelector });
   } catch (customError) {
-    if (customError instanceof DateRangeNotAppliedError) throw customError;
+    if (customError instanceof DateRangeNotAppliedError || customError instanceof CalendarScopeError) {
+      throw customError;
+    }
     const parsed = parseDateRangeValue(value);
     const group = await locateGroup(page, target);
     const scoped = group ?? page.locator("body");
@@ -636,20 +639,17 @@ export async function applyFieldValue(
 ): Promise<void> {
   const control: ControlKind = input.control ?? CONTROL_KIND.text;
   const value = input.value ?? "";
-  const containerSelector = runOptions?.optionContainerSelector;
-  const triggerSelector =
-    input.selector?.trim() && !isHashedCssModule(input.selector)
-      ? input.selector.trim()
-      : undefined;
+  const dropdownContainer = runOptions?.optionContainerSelector;
+  const calendarContainer = input.selector?.trim() || runOptions?.optionContainerSelector?.trim();
   let locator: Locator;
 
   const sel = input.selector?.trim();
   if (sel && isHashedCssModule(sel) && (input.selectorStrategy ?? "css") === "css") {
-    log(`⚠ ${input.target}: 셀렉터가 CSS 모듈 해시 클래스(${sel.slice(0, 40)}…)입니다. 빌드마다 바뀌어 취약합니다.`);
+    log(`⚠ ${input.target}: 셀렉터가 CSS 모듈 해시 클래스(${sel.slice(0, 40)}…)입니다. 경고만 하고 그대로 사용합니다.`);
   }
 
-  const hinted = await applyUsingSelectorHint(page, input, value, containerSelector).catch((error: unknown) => {
-    if (error instanceof DateRangeNotAppliedError) throw error;
+  const hinted = await applyUsingSelectorHint(page, input, value, dropdownContainer).catch((error: unknown) => {
+    if (error instanceof DateRangeNotAppliedError || error instanceof CalendarScopeError) throw error;
     return null;
   });
   if (hinted) {
@@ -673,7 +673,7 @@ export async function applyFieldValue(
       break;
     case CONTROL_KIND.select:
       log(`${input.target}에서 "${value}" 선택 (HTML select 또는 드롭다운)`);
-      locator = await applyChoiceField(page, input.target, value, input.options, containerSelector);
+      locator = await applyChoiceField(page, input.target, value, input.options, dropdownContainer);
       break;
     case CONTROL_KIND.radio:
       log(`${input.target}에서 "${value}" 라디오 선택`);
@@ -685,15 +685,15 @@ export async function applyFieldValue(
       break;
     case CONTROL_KIND.date:
       log(`${input.target} 날짜 ${value || "오늘"} 입력`);
-      locator = await applyDate(page, input.target, value, triggerSelector);
+      locator = await applyDate(page, input.target, value, calendarContainer);
       break;
     case CONTROL_KIND.dateRange:
       log(`${input.target} 날짜 버튼을 열고 캘린더에서 기간 선택 (${value || "이번 달 1일~오늘"})`);
-      locator = await applyDateRange(page, input.target, value, triggerSelector);
+      locator = await applyDateRange(page, input.target, value, calendarContainer);
       break;
     case CONTROL_KIND.combobox:
       log(`${input.target} 드롭다운에서 "${value}" 선택`);
-      locator = await applyChoiceField(page, input.target, value, input.options, containerSelector);
+      locator = await applyChoiceField(page, input.target, value, input.options, dropdownContainer);
       break;
     case CONTROL_KIND.file:
       log(`${input.target} 파일 첨부`);

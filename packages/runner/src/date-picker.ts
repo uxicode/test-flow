@@ -1,3 +1,4 @@
+import { dateTriggerNames } from "@testflow/tc/playwright-spec";
 import type { Locator, Page } from "playwright";
 import { CLICK_CALENDAR_DAY_SOURCE } from "./date-picker-day-script.js";
 
@@ -60,22 +61,11 @@ export function defaultDateRangeValue(): string {
   return `${format(start)},${format(now)}`;
 }
 
-function triggerLabels(target: string): string[] {
-  const core = target.replace(/(필터|입력|조건|선택)\s*$/u, "").trim();
-  const labels = new Set<string>([target, core].filter(Boolean));
-  if (/검사\s*일|등록\s*일|조회\s*기간/u.test(target)) {
-    labels.add("등록일");
-    labels.add("검사일");
-    labels.add("조회 기간");
-  }
-  return [...labels];
-}
-
 export async function locateDatePickerTrigger(
   page: Page,
   target: string,
 ): Promise<Locator | null> {
-  for (const label of triggerLabels(target)) {
+  for (const label of dateTriggerNames(target)) {
     const pattern = labelPattern(label);
     const found = await firstVisible([
       page.getByRole("button", { name: pattern }),
@@ -183,23 +173,50 @@ async function pickDay(scope: Locator, date: ParsedDate): Promise<void> {
   throw new Error(`${isoDateKey(date)} 날짜 칸을 찾지 못했습니다.`);
 }
 
-/** CSS 모듈 해시 클래스 감지 패턴 (날짜 트리거로 사용하지 않는다). */
-const HASHED_CSS_PATTERN = /[._][a-z][a-zA-Z0-9]*_[a-z0-9]{3,}_[a-zA-Z0-9]{2,}/u;
-
 async function locateTriggerBySelector(page: Page, selector: string): Promise<Locator | null> {
   const trimmed = selector.trim();
   if (!trimmed) return null;
-  // 해시 CSS 모듈 클래스는 날짜 트리거로 쓰지 않는다 — 라벨 기반 fallback 을 쓴다
-  if (HASHED_CSS_PATTERN.test(trimmed)) return null;
   const candidate = page.locator(trimmed).first();
   if (await candidate.count().catch(() => 0)) {
-    if (await candidate.isVisible().catch(() => false)) {
-      const dayLike = await candidate.locator('button, [role="gridcell"]').count().catch(() => 0);
-      if (dayLike >= 20) return null;
-      return candidate;
-    }
+    if (await candidate.isVisible().catch(() => false)) return candidate;
   }
   return null;
+}
+
+/** 사용자가 고른 캘린더 셀렉터를 찾지 못했을 때. dialog 등으로 넘기지 않는다. */
+export class CalendarScopeError extends Error {
+  readonly selector: string;
+  constructor(message: string, selector: string) {
+    super(message);
+    this.name = "CalendarScopeError";
+    this.selector = selector;
+  }
+}
+
+export async function locateCalendarContainer(page: Page, selector: string): Promise<Locator> {
+  const trimmed = selector.trim();
+  const scope = page.locator(trimmed).first();
+  const count = await scope.count().catch(() => 0);
+  if (count === 0) {
+    throw new CalendarScopeError(`캘린더 컨테이너를 찾지 못했습니다: ${trimmed}`, trimmed);
+  }
+  try {
+    await scope.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    throw new CalendarScopeError(`캘린더 컨테이너가 보이지 않습니다: ${trimmed}`, trimmed);
+  }
+  return scope;
+}
+
+export interface ApplyDateRangeOptions {
+  /** 사용자가 고른 캘린더 컨테이너. 받은 셀렉터를 그대로 사용한다. */
+  containerSelector?: string;
+  triggerSelector?: string;
+}
+
+function normalizeDateRangeOptions(options?: string | ApplyDateRangeOptions): ApplyDateRangeOptions {
+  if (typeof options === "string") return { containerSelector: options };
+  return options ?? {};
 }
 
 /** 캘린더를 조작한 뒤 트리거 값이 요청 범위와 다를 때. 다른 입력 방식으로 넘기지 않는다. */
@@ -242,15 +259,16 @@ export async function applyCustomDateRange(
   page: Page,
   target: string,
   value: string,
-  triggerSelector?: string,
+  options?: string | ApplyDateRangeOptions,
 ): Promise<Locator> {
   const range =
     parseDateRangeValue(value) ??
     parseDateRangeValue(defaultDateRangeValue());
   if (!range) throw new Error(`${target} 기간 값을 해석하지 못했습니다.`);
+  const opts = normalizeDateRangeOptions(options);
 
   const trigger =
-    (triggerSelector ? await locateTriggerBySelector(page, triggerSelector) : null) ??
+    (opts.triggerSelector ? await locateTriggerBySelector(page, opts.triggerSelector) : null) ??
     (await locateDatePickerTrigger(page, target));
   if (!trigger) throw new Error(`${target} 날짜 선택 버튼을 찾지 못했습니다.`);
   const triggerHandle = await trigger.elementHandle();
@@ -259,18 +277,22 @@ export async function applyCustomDateRange(
       ? triggerHandle.evaluate((el) => (el as HTMLElement).innerText || (el as HTMLInputElement).value || "")
       : "";
 
-  const dialog = await openPickerDialog(page, trigger);
-  await pickDay(dialog, range.start);
-  // 캘린더 상태가 안정될 때까지 잠시 기다린다 (시작일 선택 후 UI 전환)
+  const expanded = await trigger.getAttribute("aria-expanded");
+  if (expanded !== "true") await trigger.click();
+
+  const scope = opts.containerSelector?.trim()
+    ? await locateCalendarContainer(page, opts.containerSelector.trim())
+    : await openPickerDialog(page, trigger);
+
+  await pickDay(scope, range.start);
   await page.waitForTimeout(300);
-  await pickDay(dialog, range.end);
+  await pickDay(scope, range.end);
 
   const apply = await firstVisible([
-    dialog.getByRole("button", { name: /^(적용|확인|선택|apply|ok)$/iu }),
+    scope.getByRole("button", { name: /^(적용|확인|선택|apply|ok)$/iu }),
   ]);
   if (apply) await apply.click();
 
-  // 반드시 검증 — 범위가 실제로 반영됐는지 확인한다
   await verifySelectedRange(readTriggerText, range);
 
   return trigger;

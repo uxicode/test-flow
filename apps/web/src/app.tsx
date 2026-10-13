@@ -4,11 +4,16 @@ import { LogPanel } from "./components/log-panel";
 import { PlaywrightSpecPanel } from "./components/playwright-spec-panel";
 import { TcDocument } from "./components/tc-document";
 import type { TcInput } from "@testflow/tc";
-import { generatePlaywrightSpec, playwrightSpecFileName } from "@testflow/tc/playwright-spec";
+import {
+  dateCalendarScopeExpr,
+  dateTriggerLocatorExpr,
+  generatePlaywrightSpec,
+  playwrightLocatorExpr,
+  playwrightSpecFileName,
+} from "@testflow/tc/playwright-spec";
 import {
   getJson,
   isHashedCssModuleClient,
-  locatorCodeSnippet,
   openLogSocket,
   postJson,
   type AnalysisView,
@@ -1041,29 +1046,36 @@ export function App() {
                       {/* 실행 계획 투명성 */}
                       {(() => {
                         const loc = locatorSource(input);
+                        const isDate = input.control === "date" || input.control === "date_range";
                         if (!loc) return (
                           <p className="text-[10px] text-slate-600 mt-0.5">
                             실행 시: 레이블 "{input.target}" 로 자동 탐색
                           </p>
                         );
                         const isHashed = isHashedCssModuleClient(loc.value);
+                        const calendarExpr = dateCalendarScopeExpr(loc.value);
+                        const snippet = isDate ? calendarExpr : playwrightLocatorExpr(loc.strategy, loc.value);
                         return (
                           <div className="mt-1 space-y-0.5">
                             {isHashed && (
                               <p className="text-[10px] text-amber-400">
-                                ⚠ CSS 모듈 해시 클래스 감지 — 빌드마다 셀렉터가 바뀔 수 있습니다. 셀렉터를 다시 고르거나 탐색을 다시 실행하세요.
+                                ⚠ CSS 모듈 해시 클래스 — 경고만 표시하고 고른 셀렉터를 그대로 사용합니다.
                               </p>
                             )}
                             <p className="text-[10px] text-slate-500">
-                              로케이터: <span className="text-slate-400">[{loc.strategy}]</span> {loc.value.slice(0, 60)}{loc.value.length > 60 ? "…" : ""}
-                              <span className="ml-2 text-slate-600">({loc.source})</span>
+                              로케이터: <span className="font-mono text-slate-300">{snippet}</span>
+                              <span className="ml-2 text-slate-600">
+                                ({loc.source}{isDate ? " · 캘린더 컨테이너" : ""})
+                              </span>
                             </p>
-                            <details className="mt-0.5">
-                              <summary className="cursor-pointer text-[10px] text-slate-600 hover:text-slate-400">코드 스니펫 보기</summary>
-                              <pre className="mt-1 overflow-x-auto rounded bg-slate-900 px-2 py-1 text-[10px] text-slate-300 select-all whitespace-pre-wrap">
-                                {locatorCodeSnippet(loc.strategy, loc.value, input.control)}
-                              </pre>
-                            </details>
+                            {isDate ? (
+                              <p className="text-[10px] text-slate-600">
+                                트리거: <span className="font-mono text-slate-400">{dateTriggerLocatorExpr(input.target)}</span>
+                              </p>
+                            ) : null}
+                            <pre className="mt-1 overflow-x-auto rounded bg-slate-900 px-2 py-1 text-[10px] text-slate-300 select-all whitespace-pre-wrap">
+                              {snippet}
+                            </pre>
                           </div>
                         );
                       })()}
