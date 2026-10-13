@@ -1,5 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const apiSrcDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRootEnv = path.resolve(apiSrcDir, "../../../.env");
+const apiLocalEnv = path.resolve(apiSrcDir, "../.env");
 
 function parseLine(line: string): [string, string] | null {
   const trimmed = line.trim();
@@ -16,16 +21,19 @@ function parseLine(line: string): [string, string] | null {
   return [key, value];
 }
 
+function shouldApplyFromFile(key: string): boolean {
+  const current = process.env[key];
+  return current === undefined || current.trim() === "";
+}
+
 export function loadEnvFile(): void {
-  const envPath = path.resolve(process.cwd(), "../../.env");
-  const localPath = path.resolve(process.cwd(), ".env");
-  for (const file of [envPath, localPath]) {
+  for (const file of [repoRootEnv, apiLocalEnv]) {
     if (!fs.existsSync(file)) continue;
     for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/u)) {
       const parsed = parseLine(line);
       if (!parsed) continue;
       const [key, value] = parsed;
-      if (process.env[key] === undefined) process.env[key] = value;
+      if (shouldApplyFromFile(key)) process.env[key] = value;
     }
   }
 }

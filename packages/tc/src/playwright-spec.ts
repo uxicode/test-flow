@@ -1,5 +1,6 @@
 import { CONTROL_KIND, type ControlKind } from "./control-kind.js";
 import type { LocatorStrategy, TestCase } from "./build-test-cases.js";
+import { CLICK_CALENDAR_DAY_SOURCE } from "./calendar-day-script.js";
 
 function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -107,32 +108,9 @@ export function generatePlaywrightSpec(
   const helper = [
     `async function clickMonthDay(calendar: Locator, iso: string): Promise<void> {`,
     `  const [year, month, day] = iso.split('-').map(Number);`,
-    `  const clicked = await calendar.evaluate((root, payload) => {`,
-    `    const titleRe = new RegExp(payload.year + '\\\\s*년\\\\s*' + payload.month + '\\\\s*월');`,
-    `    const panels = Array.from(root.querySelectorAll('div, section, table'));`,
-    `    const panel = panels.find((el) => {`,
-    `      const text = el.textContent || '';`,
-    `      const headers = text.match(/\\\\d{4}\\\\s*년\\\\s*\\\\d{1,2}\\\\s*월/g) || [];`,
-    `      return titleRe.test(text) && headers.length === 1;`,
-    `    });`,
-    `    if (!panel) return false;`,
-    `    const exact = panel.querySelector('[data-date="' + payload.iso + '"], [data-iso="' + payload.iso + '"], [title="' + payload.iso + '"]');`,
-    `    if (exact) { (exact as HTMLElement).click(); return true; }`,
-    `    const buttons = Array.from(panel.querySelectorAll('button, [role="gridcell"]'));`,
-    `    const target = buttons.find((btn, index) => {`,
-    `      const n = Number((btn.textContent || '').trim());`,
-    `      if (n !== payload.day) return false;`,
-    `      if (btn.getAttribute('aria-disabled') === 'true') return false;`,
-    `      if (/outside|disabled|other-month/.test(btn.className)) return false;`,
-    `      if (index < 7 && n > 7) return false;`,
-    `      if (index > 20 && n < 8) return false;`,
-    `      return true;`,
-    `    }) as HTMLElement | undefined;`,
-    `    if (!target) return false;`,
-    `    target.click();`,
-    `    return true;`,
-    `  }, { year, month, day, iso });`,
-    `  if (!clicked) throw new Error(iso + ' 날짜 칸을 찾지 못했습니다.');`,
+    `  const point = await calendar.evaluate(${CLICK_CALENDAR_DAY_SOURCE}, { year, month, day, key: iso });`,
+    `  if (!point) throw new Error(iso + ' 날짜 칸을 찾지 못했습니다.');`,
+    `  await calendar.page().mouse.click(point.x, point.y);`,
     `}`,
   ];
 
@@ -143,14 +121,22 @@ export function generatePlaywrightSpec(
     `  await page.goto('${escapeSingle(startUrl)}');`,
     ``,
   ];
+  let usesCalendar = false;
 
   testCase.inputs.forEach((input, index) => {
     const value = options.values?.[input.target] ?? input.value;
     const varName = `field${index + 1}`;
     if (input.control === CONTROL_KIND.dateRange || input.control === CONTROL_KIND.date) {
       const parts = value.split(/[~,]/u).map((part) => part.trim()).filter(Boolean);
-      const startIso = (parts[0] ?? value).replace(/[./]/g, "-");
-      const endIso = (parts[1] ?? parts[0] ?? value).replace(/[./]/g, "-");
+      const startIso = (parts[0] ?? "").replace(/[./]/g, "-");
+      const endIso = (parts[1] ?? parts[0] ?? "").replace(/[./]/g, "-");
+      if (!/^\d{4}-\d{1,2}-\d{1,2}$/u.test(startIso)) {
+        lines.push(`  // [${input.control}] ${input.target} = (비움)`);
+        lines.push(`  throw new Error('${escapeSingle(input.target)} 값이 비어 있습니다.');`);
+        lines.push(``);
+        return;
+      }
+      usesCalendar = true;
       const triggerExpr = dateTriggerLocatorExpr(input.target);
       lines.push(`  // [${input.control}] ${input.target} = ${value}`);
       lines.push(`  const ${varName} = ${triggerExpr};`);
@@ -191,6 +177,7 @@ export function generatePlaywrightSpec(
     const phrase = testCase.expectedText.split(/\n/u)[0]?.trim() ?? testCase.expectedText.trim();
     lines.push(`  await expect(page.getByText('${escapeSingle(phrase)}')).toBeVisible();`);
   }
-  lines.push(`});`, ``, ...helper, ``);
+  lines.push(`});`, ``);
+  if (usesCalendar) lines.push(...helper, ``);
   return lines.join("\n");
 }

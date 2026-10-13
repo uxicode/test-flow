@@ -28,14 +28,15 @@ import {
   type MatchListView,
   type MatchSet,
   type MatchSetMeta,
+  type TcStepMatch,
   type RunView,
   type ScreenElementMap,
-  type ServerConfig,
   type TcFile,
   type TcFileListView,
   type TcFileMeta,
   type TestCase,
 } from "./lib/api";
+import { decryptSecret, encryptSecret } from "./lib/session-secret";
 
 function statusLabel(runStatus: string): string {
   if (runStatus === "passed") return "통과";
@@ -53,6 +54,10 @@ function statusClass(label: string): string {
 
 const STORED_FIGMA_URL = "testflow.figma-url";
 const STORED_START_URL = "testflow.start-url";
+const STORED_REMEMBER = "testflow.remember-secrets";
+const STORED_FIGMA_TOKEN = "testflow.figma-token";
+const STORED_ACCOUNT_EMAIL = "testflow.account-email";
+const STORED_ACCOUNT_PASSWORD = "testflow.account-password";
 const ACCOUNT_EMAIL = /이메일|아이디|email/iu;
 const ACCOUNT_PASSWORD = /비밀번호|패스워드|password/iu;
 
@@ -94,8 +99,46 @@ function writeSession(key: string, value: string): void {
   }
 }
 
+function remembered(key: string): string {
+  return readSession(STORED_REMEMBER) === "1" ? readSession(key) : "";
+}
+
+function stepForInput(set: MatchSet, testCaseId: string, target: string): TcStepMatch | undefined {
+  const byId = set.steps.find((item) => item.tcId === testCaseId && item.stepLabel === target);
+  if (byId) return byId;
+  const byLabel = set.steps.filter((item) => item.stepLabel === target);
+  return byLabel.length === 1 ? byLabel[0] : undefined;
+}
+
+function casesWithMatch(current: TestCase[], set: MatchSet): TestCase[] {
+  return current.map((testCase) => ({
+    ...testCase,
+    inputs: testCase.inputs.map((input) => {
+      const step = stepForInput(set, testCase.id, input.target);
+      if (!step) return input;
+      if (step.status === "rejected" || step.chosenIndex < 0) {
+        const fromMatch = step.candidates.some((candidate) => candidate.bestLocator.value === input.selector);
+        if (!fromMatch) return input;
+        return { ...input, selector: undefined, selectorStrategy: undefined };
+      }
+      const candidate = step.candidates[step.chosenIndex];
+      if (!candidate?.bestLocator.value) return input;
+      return {
+        ...input,
+        selector: candidate.bestLocator.value,
+        selectorStrategy: candidate.bestLocator.strategy,
+      };
+    }),
+  }));
+}
+
 export function App() {
   const [figmaUrl, setFigmaUrl] = useState(() => readStored(STORED_FIGMA_URL));
+  const [figmaToken, setFigmaToken] = useState(() => remembered(STORED_FIGMA_TOKEN));
+  const [accountEmail, setAccountEmail] = useState(() => remembered(STORED_ACCOUNT_EMAIL));
+  const [accountPassword, setAccountPassword] = useState("");
+  const [rememberAccount, setRememberAccount] = useState(() => readSession(STORED_REMEMBER) === "1");
+  const [secretsReady, setSecretsReady] = useState(false);
   const [specText, setSpecText] = useState("");
   const [jobId, setJobId] = useState("");
   const [status, setStatus] = useState("");
@@ -113,7 +156,6 @@ export function App() {
   /** `${caseId}:${inputTarget}` 또는 `${caseId}:__option_container__` */
   const [inspectingFieldKey, setInspectingFieldKey] = useState("");
   const [editingInputKey, setEditingInputKey] = useState("");
-  const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [tcFiles, setTcFiles] = useState<TcFileMeta[]>([]);
   const [showTcFiles, setShowTcFiles] = useState(false);
   // Phase 2: 화면 탐색
@@ -173,10 +215,46 @@ export function App() {
   }, [startUrl]);
 
   useEffect(() => {
-    void getJson<ServerConfig>("/api/config")
-      .then((cfg) => setServerConfig(cfg))
-      .catch(() => undefined);
+    const cipher = remembered(STORED_ACCOUNT_PASSWORD);
+    if (!cipher) {
+      setSecretsReady(true);
+      return;
+    }
+    let cancelled = false;
+    void decryptSecret(cipher)
+      .then((plain) => {
+        if (cancelled) return;
+        setAccountPassword(plain);
+        setSecretsReady(true);
+      })
+      .catch(() => {
+        if (!cancelled) setSecretsReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!secretsReady) return;
+    if (!rememberAccount) {
+      writeSession(STORED_REMEMBER, "");
+      writeSession(STORED_FIGMA_TOKEN, "");
+      writeSession(STORED_ACCOUNT_EMAIL, "");
+      writeSession(STORED_ACCOUNT_PASSWORD, "");
+      return;
+    }
+    writeSession(STORED_REMEMBER, "1");
+    writeSession(STORED_FIGMA_TOKEN, figmaToken);
+    writeSession(STORED_ACCOUNT_EMAIL, accountEmail);
+    let cancelled = false;
+    void encryptSecret(accountPassword).then((cipher) => {
+      if (!cancelled) writeSession(STORED_ACCOUNT_PASSWORD, cipher);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [secretsReady, rememberAccount, figmaToken, accountEmail, accountPassword]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -281,7 +359,7 @@ export function App() {
   }
 
   async function handleAnalyze() {
-    await startAnalysis({ url: figmaUrl }, "analyze");
+    await startAnalysis({ url: figmaUrl, token: figmaToken.trim() }, "analyze");
   }
 
   async function handleAnalyzeText() {
@@ -319,7 +397,15 @@ export function App() {
   }
 
   function mergedValues(testCase: TestCase): Record<string, string> {
-    return { ...(values[testCase.id] ?? {}) };
+    const typed = values[testCase.id] ?? {};
+    return Object.fromEntries(
+      testCase.inputs.map((input) => [
+        input.target,
+        Object.prototype.hasOwnProperty.call(typed, input.target)
+          ? typed[input.target] ?? ""
+          : input.value ?? "",
+      ]),
+    );
   }
 
   function updateTestCase(caseId: string, patch: Partial<TestCase>) {
@@ -359,6 +445,8 @@ export function App() {
       const res = await postJson<{ selector: string }>("/api/inspect-selector", {
         startUrl,
         label: inputTarget,
+        email: accountEmail.trim(),
+        password: accountPassword,
       });
       if (!res.selector) {
         setErrorMessage("셀렉터가 적용되지 않았습니다. 브라우저에서 요소를 클릭한 뒤 [적용하기]를 눌러야 합니다.");
@@ -383,15 +471,21 @@ export function App() {
     setErrorMessage("");
     setCaseState((current) => ({ ...current, [testCase.id]: "진행 중" }));
     try {
+      const shown = mergedValues(testCase);
       const created = await postJson<{ runId: string }>("/api/runs", {
         jobId,
         caseId: testCase.id,
         startUrl,
-        values: mergedValues(testCase),
+        email: accountEmail.trim(),
+        password: accountPassword,
+        values: shown,
         apiPath: testCase.apiPath,
         assert: testCase.assert,
         optionContainerSelector: testCase.optionContainerSelector,
-        inputs: testCase.inputs,
+        inputs: testCase.inputs.map((input) => ({
+          ...input,
+          value: shown[input.target] ?? "",
+        })),
       });
       setRunIds((current) => ({ ...current, [testCase.id]: created.runId }));
     } catch (error) {
@@ -444,7 +538,11 @@ export function App() {
     setExploreStatus("running");
     setSelectedMap(null);
     try {
-      const created = await postJson<{ exploreId: string }>("/api/explore", { startUrl: exploreUrl });
+      const created = await postJson<{ exploreId: string }>("/api/explore", {
+        startUrl: exploreUrl,
+        email: accountEmail.trim(),
+        password: accountPassword,
+      });
       setExploreId(created.exploreId);
       exploreSocketRef.current?.close();
       exploreSocketRef.current = openLogSocket(created.exploreId, (event) => {
@@ -464,7 +562,13 @@ export function App() {
     const set = await getJson<MatchSet>(`/api/matches/${id}`);
     setMatchSet(set);
     setCurrentMatchId(id);
+    setCases((current) => casesWithMatch(current, set));
   }
+
+  useEffect(() => {
+    if (!matchSet) return;
+    setCases((current) => casesWithMatch(current, matchSet));
+  }, [matchSet]);
 
   async function loadMatchList() {
     const res = await getJson<MatchListView>("/api/matches");
@@ -537,9 +641,9 @@ export function App() {
       return input.value || "없음";
     }
     const typed = documentValues[testCase.id]?.[input.target]?.trim() ?? "";
-    if (ACCOUNT_PASSWORD.test(input.target)) return typed ? "입력됨" : "서버 환경변수 사용";
+    if (ACCOUNT_PASSWORD.test(input.target)) return typed ? "입력됨" : accountPassword ? "입력한 계정 사용" : "실행 시 입력";
     if (typed) return typed;
-    if (isAccountField(input.target)) return "서버 환경변수 사용";
+    if (isAccountField(input.target)) return accountEmail.trim() ? "입력한 계정 사용" : "실행 시 입력";
     return "실행 시 입력";
   }
 
@@ -560,21 +664,6 @@ export function App() {
       <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
         <h2 className="text-sm font-medium">기획서 분석</h2>
 
-        {serverConfig && (
-          <div className="flex gap-3 text-xs">
-            <span
-              className={serverConfig.hasFigmaToken ? "text-emerald-400" : "text-amber-400"}
-            >
-              {serverConfig.hasFigmaToken ? "✓ Figma 토큰 설정됨" : "⚠ FIGMA_TOKEN 환경변수 미설정"}
-            </span>
-            <span
-              className={serverConfig.hasTestAccount ? "text-emerald-400" : "text-amber-400"}
-            >
-              {serverConfig.hasTestAccount ? "✓ 테스트 계정 설정됨" : "⚠ TEST_ACCOUNT_* 환경변수 미설정"}
-            </span>
-          </div>
-        )}
-
         <div className="flex items-end gap-3">
           <label className="min-w-0 flex-1 space-y-1 text-xs text-slate-400">
             Figma URL
@@ -586,14 +675,57 @@ export function App() {
               onChange={(event) => setFigmaUrl(event.target.value)}
             />
           </label>
+          <label className="min-w-0 flex-1 space-y-1 text-xs text-slate-400">
+            Figma 토큰
+            <input
+              className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+              type="password"
+              value={figmaToken}
+              autoComplete="off"
+              placeholder="figd_..."
+              onChange={(event) => setFigmaToken(event.target.value)}
+            />
+          </label>
         </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="space-y-1 text-xs text-slate-400">
+            테스트 계정 이메일
+            <input
+              className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+              type="email"
+              value={accountEmail}
+              autoComplete="off"
+              onChange={(event) => setAccountEmail(event.target.value)}
+            />
+          </label>
+          <label className="space-y-1 text-xs text-slate-400">
+            테스트 계정 비밀번호
+            <input
+              className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+              type="password"
+              value={accountPassword}
+              autoComplete="off"
+              onChange={(event) => setAccountPassword(event.target.value)}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-slate-400">
+              <input
+                type="checkbox"
+                className="accent-sky-400"
+                checked={rememberAccount}
+                onChange={(event) => setRememberAccount(event.target.checked === true)}
+              />
+              기억하기
+          </label>
+        </div>
+       
         <div className="flex gap-2">
           <ActionButton
             label="피그마 분석"
             variant="primary"
             busy={busyAction === "analyze"}
             busyLabel="피그마 분석 중…"
-            disabled={isWorking || !figmaUrl || !serverConfig?.hasFigmaToken}
+            disabled={isWorking || !figmaUrl || !figmaToken.trim()}
             onClick={() => void handleAnalyze()}
           />
           <ActionButton
@@ -800,11 +932,11 @@ export function App() {
           TC 입력 레이블과 요소 맵을 매칭합니다. 규칙 매칭 → 모델 보조(gemma2:9b) → 사람 검토 순서로 진행합니다.
         </p>
 
-        {elementMaps.length > 0 && (
+        {elementMaps.some((m) => m.elementCount > 0) && (
           <div className="space-y-2">
-            <p className="text-xs text-slate-400">요소 맵을 선택해 매칭 시작:</p>
+            <p className="text-xs text-slate-400">요소가 있는 맵만 매칭할 수 있습니다.</p>
             <div className="flex flex-wrap gap-2">
-              {elementMaps.slice(0, 5).map((m: ElementMapMeta) => (
+              {elementMaps.filter((m) => m.elementCount > 0).slice(0, 8).map((m: ElementMapMeta) => (
                 <button
                   key={m.mapId}
                   type="button"
@@ -913,6 +1045,7 @@ export function App() {
                             <span className="font-medium">{c.elementLabel}</span>
                             <span className="ml-1 text-slate-500">({c.controlKind})</span>
                             <span className="ml-2 text-slate-600">[{c.method} {Math.round(c.confidence * 100)}%]</span>
+                            <span className="mt-0.5 block font-mono text-[10px] text-slate-500">{c.bestLocator.strategy} {c.bestLocator.value}</span>
                           </span>
                         </label>
                       ))}
@@ -947,8 +1080,7 @@ export function App() {
       <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
         <h2 className="text-sm font-medium">실행</h2>
         <p className="text-xs text-slate-400">
-          로그인이 필요한 테스트는 서버의 <code className="text-slate-300">TEST_ACCOUNT_EMAIL</code> /
-          <code className="text-slate-300"> TEST_ACCOUNT_PASSWORD</code> 환경변수로 설정한 계정을 사용합니다.
+          로그인이 필요한 테스트는 위에 입력한 테스트 계정을 사용합니다.
           시작 주소는 로그인 페이지가 아니라 검사할 화면 주소로 넣으세요.
         </p>
         {cases.length > 0 ? <TcDocument cases={cases} values={documentValues} /> : null}
@@ -1097,6 +1229,7 @@ export function App() {
                                 [input.target]: next,
                               },
                             }));
+                            updateInputField(testCase.id, input.target, { value: next });
                           }}
                         >
                           {input.options.map((option) => (
@@ -1128,6 +1261,7 @@ export function App() {
                                 [input.target]: next,
                               },
                             }));
+                            updateInputField(testCase.id, input.target, { value: next });
                           }}
                         />
                       ) : (
@@ -1158,6 +1292,7 @@ export function App() {
                                 [input.target]: next,
                               },
                             }));
+                            updateInputField(testCase.id, input.target, { value: next });
                           }}
                         />
                       )}

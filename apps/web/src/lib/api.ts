@@ -9,11 +9,6 @@ export interface AnalysisView {
   cases: TestCase[];
 }
 
-export interface ServerConfig {
-  hasFigmaToken: boolean;
-  hasTestAccount: boolean;
-}
-
 export interface TcFileListView {
   files: TcFileMeta[];
 }

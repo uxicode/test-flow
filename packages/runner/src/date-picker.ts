@@ -113,7 +113,8 @@ export function displayedRangeMatches(
   return sameDate(parsed.start, range.start) && sameDate(parsed.end, range.end);
 }
 
-type DayClickPayload = { year: number; month: number; day: number; key: string; doClick: boolean };
+type DayPoint = { x: number; y: number };
+type DayClickPayload = { year: number; month: number; day: number; key: string };
 
 async function clickCalendarDay(scope: Locator, date: ParsedDate, doClick: boolean): Promise<boolean> {
   const payload: DayClickPayload = {
@@ -121,13 +122,15 @@ async function clickCalendarDay(scope: Locator, date: ParsedDate, doClick: boole
     month: date.month,
     day: date.day,
     key: isoDateKey(date),
-    doClick,
   };
   const clicker = new Function("el", "payload", `return (${CLICK_CALENDAR_DAY_SOURCE})(el, payload);`) as (
     el: Element,
     arg: DayClickPayload,
-  ) => boolean;
-  return scope.evaluate(clicker, payload).catch(() => false);
+  ) => DayPoint | null;
+  const point = await scope.evaluate(clicker, payload).catch(() => null);
+  if (!point || typeof point.x !== "number" || typeof point.y !== "number") return false;
+  if (doClick) await scope.page().mouse.click(point.x, point.y);
+  return true;
 }
 
 async function shownMonthRange(scope: Locator): Promise<{ first: number; last: number } | null> {
@@ -261,10 +264,8 @@ export async function applyCustomDateRange(
   value: string,
   options?: string | ApplyDateRangeOptions,
 ): Promise<Locator> {
-  const range =
-    parseDateRangeValue(value) ??
-    parseDateRangeValue(defaultDateRangeValue());
-  if (!range) throw new Error(`${target} 기간 값을 해석하지 못했습니다.`);
+  const range = parseDateRangeValue(value);
+  if (!range) throw new Error(`${target} 기간 값이 비어 있거나 해석하지 못했습니다.`);
   const opts = normalizeDateRangeOptions(options);
 
   const trigger =
@@ -274,7 +275,14 @@ export async function applyCustomDateRange(
   const triggerHandle = await trigger.elementHandle();
   const readTriggerText = async () =>
     triggerHandle
-      ? triggerHandle.evaluate((el) => (el as HTMLElement).innerText || (el as HTMLInputElement).value || "")
+      ? triggerHandle.evaluate((el) => {
+          const root = el as HTMLElement;
+          const field = root.matches("input, textarea")
+            ? (root as HTMLInputElement)
+            : root.querySelector("input, textarea");
+          const value = field && "value" in field ? field.value : "";
+          return value || root.innerText || "";
+        })
       : "";
 
   const expanded = await trigger.getAttribute("aria-expanded");

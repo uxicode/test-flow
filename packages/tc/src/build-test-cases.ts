@@ -7,14 +7,6 @@ import {
   parseOptionList,
 } from "./infer-control.js";
 
-function defaultDateRangeValue(): string {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const format = (date: Date) =>
-    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  return `${format(start)},${format(now)}`;
-}
-
 export const TC_KIND = {
   success: "success",
   failure: "failure",
@@ -126,12 +118,13 @@ function enrichField(field: OrderedField, feature?: ScreenFeature): TcInput {
   const control =
     parseControlKind(field.control) ??
     inferControlKind(context, options);
-  let value = "";
-  if (control === CONTROL_KIND.dateRange) value = defaultDateRangeValue();
-  else if (control === CONTROL_KIND.date)
-    value = new Date().toISOString().slice(0, 10);
-  else if (control !== CONTROL_KIND.text && options?.length)
-    value = defaultOptionValue(options, pickOptionHint(feature, field));
+  const value =
+    control !== CONTROL_KIND.text &&
+    control !== CONTROL_KIND.date &&
+    control !== CONTROL_KIND.dateRange &&
+    options?.length
+      ? defaultOptionValue(options, pickOptionHint(feature, field))
+      : "";
   return {
     target: field.target,
     value,

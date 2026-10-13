@@ -47,6 +47,16 @@ describe("generatePlaywrightSpec", () => {
     assert.match(spec, /data-iso=/);
   });
 
+  it("날짜 값이 비어 있으면 빈 날짜를 클릭하지 않는다", () => {
+    const spec = generatePlaywrightSpec(
+      { ...SAMPLE, inputs: [{ ...SAMPLE.inputs[0], value: "" }] },
+      { startUrl: "https://admin.example.com/users" },
+    );
+    assert.match(spec, /검사일 필터 값이 비어 있습니다/);
+    assert.equal(spec.includes("clickMonthDay("), false);
+    assert.equal(spec.includes("toHaveText"), false);
+  });
+
   it("파일 이름은 spec.ts 로 끝난다", () => {
     assert.equal(
       playwrightSpecFileName("관리자 사용자 현황 · 검사일 필터"),

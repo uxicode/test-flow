@@ -15,6 +15,10 @@
     "./playwright-spec": {
       "types": "./src/playwright-spec.ts",
       "import": "./src/playwright-spec.ts"
+    },
+    "./calendar-day-script": {
+      "types": "./src/calendar-day-script.ts",
+      "import": "./src/calendar-day-script.ts"
     }
   },
   "scripts": {

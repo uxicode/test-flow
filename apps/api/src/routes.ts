@@ -75,24 +75,53 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function readToken(body: Record<string, unknown>): string {
+  return typeof body.token === "string" ? body.token.trim() : "";
+}
+
+function readLogin(body: Record<string, unknown>): { email: string; password: string } | undefined {
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!email || !password) return undefined;
+  return { email, password };
+}
+
+function applyMatchToJob(set: MatchSet): void {
+  const job = getJob(set.jobId);
+  if (!job) return;
+  job.cases = job.cases.map((testCase) => ({
+    ...testCase,
+    inputs: testCase.inputs.map((input) => {
+      const byId = set.steps.find((item) => item.tcId === testCase.id && item.stepLabel === input.target);
+      const byLabel = set.steps.filter((item) => item.stepLabel === input.target);
+      const step = byId ?? (byLabel.length === 1 ? byLabel[0] : undefined);
+      if (!step) return input;
+      if (step.status === "rejected" || step.chosenIndex < 0) {
+        const fromMatch = step.candidates.some((candidate) => candidate.bestLocator.value === input.selector);
+        if (!fromMatch) return input;
+        return { ...input, selector: undefined, selectorStrategy: undefined };
+      }
+      const candidate = step.candidates[step.chosenIndex];
+      if (!candidate?.bestLocator.value) return input;
+      return {
+        ...input,
+        selector: candidate.bestLocator.value,
+        selectorStrategy: candidate.bestLocator.strategy,
+      };
+    }),
+  }));
+}
+
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/health", async () => ({ ok: true }));
-
-  app.get("/api/config", async () => {
-    return {
-      hasFigmaToken: Boolean(process.env.FIGMA_TOKEN?.trim()),
-      hasTestAccount: Boolean(process.env.TEST_ACCOUNT_EMAIL?.trim() && process.env.TEST_ACCOUNT_PASSWORD?.trim()),
-    };
-  });
 
   app.post("/api/analysis", async (req, reply) => {
     const body = isRecord(req.body) ? req.body : {};
     const url = typeof body.url === "string" ? body.url : "";
     const specText = typeof body.specText === "string" ? body.specText : "";
-    const token = process.env.FIGMA_TOKEN?.trim() ?? "";
+    const token = readToken(body);
     if ((!url || !token) && !specText.trim()) {
-      if (url && !token)
-        return reply.code(400).send({ error: "Figma 토큰이 설정되지 않았습니다. 서버의 FIGMA_TOKEN 환경변수를 확인하세요." });
+      if (url && !token) return reply.code(400).send({ error: "Figma 토큰을 입력하세요." });
       return reply.code(400).send({ error: "Figma URL 또는 텍스트 기획서가 필요합니다." });
     }
     const jobId = randomUUID();
@@ -192,9 +221,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const state: ExploreState = { exploreId, url: startUrl, status: "running", controller };
     explores.set(exploreId, state);
 
-    const loginEmail = process.env.TEST_ACCOUNT_EMAIL?.trim() ?? "";
-    const loginPassword = process.env.TEST_ACCOUNT_PASSWORD ?? "";
-    const login = loginEmail && loginPassword ? { email: loginEmail, password: loginPassword } : undefined;
+    const login = readLogin(body);
 
     void (async () => {
       try {
@@ -318,6 +345,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           onLog: (msg) => publishLog(matchJobId, msg),
         });
         const meta = saveMatchSet(matchSet);
+        applyMatchToJob(matchSet);
         state.status = "completed";
         state.matchId = meta.matchId;
         publishLog(matchJobId, `매칭 완료 (matchId: ${meta.matchId})`);
@@ -378,6 +406,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "검토 적용 실패" });
     }
     saveMatchSetById(matchId, set);
+    applyMatchToJob(set);
     return { ok: true };
   });
 
@@ -421,9 +450,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           Object.entries(body.values).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
         )
       : {};
-    const loginEmail = process.env.TEST_ACCOUNT_EMAIL?.trim() ?? "";
-    const loginPassword = process.env.TEST_ACCOUNT_PASSWORD ?? "";
-    const login = loginEmail && loginPassword ? { email: loginEmail, password: loginPassword } : undefined;
+    const login = readLogin(body);
     if (!/^https?:\/\//iu.test(startUrl))
       return reply.code(400).send({ error: "http(s) 시작 URL이 필요합니다." });
     const job = getJob(jobId);
@@ -452,12 +479,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       : undefined;
 
     const resolvedInputs = (inputsOverride ?? testCase.inputs).map((input) => {
-      if (input.selector) return input; // 이미 셀렉터가 있으면 그대로 사용
-      if (!approvedMatchSet) return input;
+      const typed = Object.prototype.hasOwnProperty.call(values, input.target)
+        ? values[input.target] ?? ""
+        : input.value;
+      const withValue = { ...input, value: typed };
+      if (withValue.selector) return withValue;
+      if (!approvedMatchSet) return withValue;
       const resolved = resolveApprovedLocator(approvedMatchSet, input.target);
       return resolved
-        ? { ...input, selector: resolved.selector, selectorStrategy: resolved.selectorStrategy }
-        : input;
+        ? { ...withValue, selector: resolved.selector, selectorStrategy: resolved.selectorStrategy }
+        : withValue;
     });
 
     const mergedCase: TestCase = {
@@ -506,9 +537,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: "http(s) 시작 URL이 필요합니다." });
     }
     const label = typeof body.label === "string" ? body.label.trim() : "";
-    const loginEmail = process.env.TEST_ACCOUNT_EMAIL?.trim() ?? "";
-    const loginPassword = process.env.TEST_ACCOUNT_PASSWORD ?? "";
-    const login = loginEmail && loginPassword ? { email: loginEmail, password: loginPassword } : undefined;
+    const login = readLogin(body);
 
     try {
       const selector = await inspectSelector({ startUrl, login });

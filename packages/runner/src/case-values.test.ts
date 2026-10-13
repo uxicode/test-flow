@@ -28,6 +28,27 @@ describe("valuesForCase", () => {
     assert.throws(() => valuesForCase(success, {}), /이메일 값이 비어 있습니다/);
   });
 
+  it("날짜 범위가 비어 있으면 이번 달 기본값을 넣지 않고 멈춘다", () => {
+    const dateCase: TestCase = {
+      ...adminFailure,
+      kind: "success",
+      inputs: [{ target: "검사일 필터", value: "", control: "date_range" }],
+    };
+    assert.throws(() => valuesForCase(dateCase, {}), /검사일 필터 값이 비어 있습니다/);
+  });
+
+  it("입력칸을 비우면 케이스에 남아 있는 기간을 쓰지 않는다", () => {
+    const dateCase: TestCase = {
+      ...adminFailure,
+      kind: "success",
+      inputs: [{ target: "검사일 필터", value: "2026-10-01,2026-10-13", control: "date_range" }],
+    };
+    assert.throws(
+      () => valuesForCase(dateCase, { "검사일 필터": "" }),
+      /검사일 필터 값이 비어 있습니다/,
+    );
+  });
+
   it("필수 입력 실패는 칸 이름이 들어 있어도 비운다", () => {
     assert.deepEqual(valuesForCase(adminFailure, {}), [{ target: "이름", value: "" }]);
   });
