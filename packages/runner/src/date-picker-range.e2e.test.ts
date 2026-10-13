@@ -14,10 +14,14 @@ import { after, before, describe, it } from "node:test";
 import { chromium } from "playwright";
 import { CONTROL_KIND } from "@testflow/tc";
 import {
+  CLICK_CALENDAR_DAY_SOURCE,
+  DATE_VALUE_MATCHES_SOURCE,
   dateCalendarScopeExpr,
   dateTriggerLocatorExpr,
   generatePlaywrightSpec,
   playwrightLocatorExpr,
+  type DayClickPayload,
+  type DayClickResult,
 } from "@testflow/tc/playwright-spec";
 import {
   applyCustomDateRange,
@@ -67,6 +71,7 @@ const FIXTURE_HTML = `<!DOCTYPE html>
   <script>
     const TODAY = '2026-10-13';
     const state = { start: null, end: null, left: { y: 2026, m: 10 } };
+    const cellDates = [];
 
     function iso(y, m, d) {
       return y + '-' + String(m).padStart(2,'0') + '-' + String(d).padStart(2,'0');
@@ -77,6 +82,7 @@ const FIXTURE_HTML = `<!DOCTYPE html>
     }
 
     function render() {
+      cellDates.length = 0;
       const cal = document.getElementById('calendar');
       const left = state.left;
       const right = addMonth(left.y, left.m, 1);
@@ -90,7 +96,10 @@ const FIXTURE_HTML = `<!DOCTYPE html>
         });
       });
       cal.querySelectorAll('.day-btn').forEach((btn) => {
-        btn.addEventListener('click', () => pickDate(btn.getAttribute('data-iso')));
+        btn.addEventListener('click', () => {
+          const id = Number(btn.getAttribute('data-cell-id'));
+          pickDate(cellDates[id]);
+        });
       });
       updateHighlight();
     }
@@ -101,6 +110,7 @@ const FIXTURE_HTML = `<!DOCTYPE html>
       const prev = addMonth(year, month, -1);
       const next = addMonth(year, month, 1);
       const prevDays = new Date(prev.y, prev.m, 0).getDate();
+      const withDateAttr = side === 'left';
       let cells = '';
       for (let i = 0; i < 42; i++) {
         let y, m, d, outside = false;
@@ -112,9 +122,14 @@ const FIXTURE_HTML = `<!DOCTYPE html>
           y = year; m = month; d = i - first + 1;
         }
         const date = iso(y, m, d);
-        const cls = ['day-btn', outside ? 'outside' : '', date === TODAY ? 'today' : ''].filter(Boolean).join(' ');
-        const aria = date === TODAY ? ('오늘 2026년 10월 13일') : String(d);
-        cells += '<button type="button" class="' + cls + '" data-iso="' + date + '" aria-label="' + aria + '">' + d + '</button>';
+        const isToday = date === TODAY;
+        const cls = ['day-btn', outside ? 'outside' : '', isToday ? 'today' : ''].filter(Boolean).join(' ');
+        const cellId = cellDates.length;
+        cellDates.push(date);
+        let attrs = 'type="button" class="' + cls + '" data-cell-id="' + cellId + '"';
+        if (withDateAttr && (outside || !isToday)) attrs += ' data-day-value="' + date + '"';
+        attrs += isToday ? ' aria-label="오늘 2026년 10월 13일"' : (' aria-label="' + d + '"');
+        cells += '<button ' + attrs + '>' + d + '</button>';
       }
       return '<div class="month-panel" id="' + side + '-panel">' +
         '<div class="month-head">' +
@@ -158,7 +173,7 @@ const FIXTURE_HTML = `<!DOCTYPE html>
     function updateHighlight() {
       document.querySelectorAll('.day-btn').forEach((btn) => {
         btn.classList.remove('selected', 'in-range');
-        const d = btn.getAttribute('data-iso');
+        const d = cellDates[Number(btn.getAttribute('data-cell-id'))];
         if (!d) return;
         if (d === state.start || d === state.end) btn.classList.add('selected');
         else if (state.start && state.end && d > state.start && d < state.end) btn.classList.add('in-range');
@@ -307,7 +322,8 @@ describe("applyCustomDateRange (두 달 캘린더 픽스처)", () => {
       await assert.rejects(
         () => applyCustomDateRange(page, "기간 선택", "2099-01-01,2099-01-31"),
         (err: Error) => {
-          assert.ok(err.message.length > 0, "에러 메시지가 있어야 한다");
+          assert.match(err.message, /2099-01-01/);
+          assert.match(err.message, /스캔한 속성/);
           return true;
         },
       );
@@ -420,7 +436,12 @@ describe("applyCustomDateRange (두 달 캘린더 픽스처)", () => {
     assert.ok(spec.includes(dateTriggerLocatorExpr("검사일 필터")));
     assert.equal(spec.includes("트리거로 쓰지 않는다"), false);
     assert.equal(spec.includes("getByRole('dialog')"), false);
-    assert.ok(spec.includes("[data-iso=\"' + payload.iso + '\"]") || spec.includes("data-iso="));
+    assert.ok(
+      spec.replace(/\s+/g, " ").includes(DATE_VALUE_MATCHES_SOURCE.replace(/\s+/g, " ")),
+      "spec 이 러너와 같은 날짜 값 매칭을 써야 한다",
+    );
+    assert.equal(spec.includes("[data-date=\"' + payload.iso"), false);
+    assert.equal(spec.includes("[data-iso=\"' + payload.iso"), false);
 
     const browser = await chromium.launch({ headless: true });
     const ctx = await browser.newContext();
@@ -438,32 +459,57 @@ describe("applyCustomDateRange (두 달 캘린더 픽스처)", () => {
 
       const clickMonthDay = async (iso: string) => {
         const [year, month, day] = iso.split("-").map(Number);
-        const clicked = await calendar.evaluate((root, payload) => {
-          const titleRe = new RegExp(payload.year + "\\s*년\\s*" + payload.month + "\\s*월");
-          const panels = Array.from(root.querySelectorAll("div, section, table"));
-          const panel = panels.find((el) => {
-            const text = el.textContent || "";
-            const headers = text.match(/\d{4}\s*년\s*\d{1,2}\s*월/g) || [];
-            return titleRe.test(text) && headers.length === 1;
-          });
-          if (!panel) return false;
-          const exact = panel.querySelector(
-            '[data-date="' + payload.iso + '"], [data-iso="' + payload.iso + '"], [title="' + payload.iso + '"]',
-          );
-          if (exact) {
-            (exact as HTMLElement).click();
-            return true;
-          }
-          return false;
-        }, { year, month, day, iso });
-        assert.equal(clicked, true, `${iso} 를 spec 로케이터로 눌러야 한다`);
+        const payload: DayClickPayload = { year, month, day, key: iso, doClick: true };
+        const clicker = new Function("el", "payload", `return (${CLICK_CALENDAR_DAY_SOURCE})(el, payload);`) as (
+          el: Element,
+          arg: DayClickPayload,
+        ) => DayClickResult;
+        const result = await calendar.evaluate(clicker, payload);
+        assert.equal(result.ok, true, result.reason ?? `${iso} 를 spec 로케이터로 눌러야 한다`);
+        return result;
       };
 
-      await clickMonthDay("2026-10-01");
-      await clickMonthDay("2026-10-13");
+      const start = await clickMonthDay("2026-10-01");
+      const end = await clickMonthDay("2026-10-13");
+      assert.equal(start.method, "attribute");
+      assert.equal(end.method, "attribute");
       assert.equal((await page.locator("#trigger").innerText()).replace(/\s+/g, " ").trim(), "2026.10.01 ~ 2026.10.13");
       await page.getByRole("button", { name: "조회" }).click();
       assert.equal(await page.getByText("사용자 목록").isVisible(), true);
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("비표준 속성 값으로 찾고, 속성 없는 칸은 날짜 텍스트로 찾는다", async () => {
+    const picked = "._root_du6a0_1._calendar_o7hka_89";
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      await page.locator("#trigger").click();
+      const calendar = page.locator(picked);
+      await calendar.waitFor({ state: "visible", timeout: 5000 });
+
+      const probe = async (iso: string, doClick: boolean) => {
+        const [year, month, day] = iso.split("-").map(Number);
+        const payload: DayClickPayload = { year, month, day, key: iso, doClick };
+        const clicker = new Function("el", "payload", `return (${CLICK_CALENDAR_DAY_SOURCE})(el, payload);`) as (
+          el: Element,
+          arg: DayClickPayload,
+        ) => DayClickResult;
+        return calendar.evaluate(clicker, payload);
+      };
+
+      assert.equal((await probe("2026-10-01", false)).method, "attribute");
+      assert.equal((await probe("2026-10-13", false)).method, "attribute");
+      assert.equal((await probe("2026-11-15", false)).method, "day-text");
+
+      await applyCustomDateRange(page, "기간 선택", "2026-10-05,2026-11-15");
+      const text = await page.locator("#trigger").innerText();
+      assert.equal(text.replace(/\s+/g, " ").trim(), "2026.10.05 ~ 2026.11.15");
     } finally {
       await ctx.close();
       await browser.close();

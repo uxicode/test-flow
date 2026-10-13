@@ -1,6 +1,10 @@
-import { dateTriggerNames } from "@testflow/tc/playwright-spec";
+import {
+  CLICK_CALENDAR_DAY_SOURCE,
+  dateTriggerNames,
+  type DayClickPayload,
+  type DayClickResult,
+} from "@testflow/tc/playwright-spec";
 import type { Locator, Page } from "playwright";
-import { CLICK_CALENDAR_DAY_SOURCE } from "./date-picker-day-script.js";
 
 export interface ParsedDate {
   year: number;
@@ -113,9 +117,7 @@ export function displayedRangeMatches(
   return sameDate(parsed.start, range.start) && sameDate(parsed.end, range.end);
 }
 
-type DayClickPayload = { year: number; month: number; day: number; key: string; doClick: boolean };
-
-async function clickCalendarDay(scope: Locator, date: ParsedDate, doClick: boolean): Promise<boolean> {
+async function clickCalendarDay(scope: Locator, date: ParsedDate, doClick: boolean): Promise<DayClickResult> {
   const payload: DayClickPayload = {
     year: date.year,
     month: date.month,
@@ -126,8 +128,8 @@ async function clickCalendarDay(scope: Locator, date: ParsedDate, doClick: boole
   const clicker = new Function("el", "payload", `return (${CLICK_CALENDAR_DAY_SOURCE})(el, payload);`) as (
     el: Element,
     arg: DayClickPayload,
-  ) => boolean;
-  return scope.evaluate(clicker, payload).catch(() => false);
+  ) => DayClickResult;
+  return scope.evaluate(clicker, payload);
 }
 
 async function shownMonthRange(scope: Locator): Promise<{ first: number; last: number } | null> {
@@ -145,7 +147,8 @@ async function shownMonthRange(scope: Locator): Promise<{ first: number; last: n
 async function ensureDayVisible(scope: Locator, date: ParsedDate): Promise<void> {
   const target = date.year * 12 + date.month;
   for (let attempt = 0; attempt < 14; attempt += 1) {
-    if (await clickCalendarDay(scope, date, false)) return;
+    const probe = await clickCalendarDay(scope, date, false).catch(() => ({ ok: false } as DayClickResult));
+    if (probe.ok) return;
 
     const shown = await shownMonthRange(scope);
     if (shown && target >= shown.first && target <= shown.last) break;
@@ -169,8 +172,12 @@ async function ensureDayVisible(scope: Locator, date: ParsedDate): Promise<void>
 
 async function pickDay(scope: Locator, date: ParsedDate): Promise<void> {
   await ensureDayVisible(scope, date);
-  if (await clickCalendarDay(scope, date, true)) return;
-  throw new Error(`${isoDateKey(date)} 날짜 칸을 찾지 못했습니다.`);
+  const result = await clickCalendarDay(scope, date, true);
+  if (result.ok) {
+    console.log(`[clickMonthDay] ${isoDateKey(date)} matched by ${result.method}`);
+    return;
+  }
+  throw new Error(result.reason ?? `${isoDateKey(date)} 날짜 칸을 찾지 못했습니다.`);
 }
 
 async function locateTriggerBySelector(page: Page, selector: string): Promise<Locator | null> {

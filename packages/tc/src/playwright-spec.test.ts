@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { CONTROL_KIND } from "./control-kind.js";
+import { DATE_VALUE_MATCHES_SOURCE } from "./click-calendar-day-script.js";
 import {
   dateCalendarScopeExpr,
   dateTriggerLocatorExpr,
@@ -44,7 +45,14 @@ describe("generatePlaywrightSpec", () => {
     assert.match(spec, /clickMonthDay\(calendar1, '2026-10-01'\)/);
     assert.match(spec, /clickMonthDay\(calendar1, '2026-10-13'\)/);
     assert.match(spec, /getByRole\('button', \{ name: '조회' \}\)/);
-    assert.match(spec, /data-iso=/);
+    assert.ok(spec.includes("dateValueMatches"), "spec 이 속성 값으로 날짜를 찾아야 한다");
+    assert.ok(
+      spec.replace(/\s+/g, " ").includes(DATE_VALUE_MATCHES_SOURCE.replace(/\s+/g, " ")),
+      "러너와 같은 날짜 값 매칭을 써야 한다",
+    );
+    assert.equal(spec.includes("[data-date=\"' + payload.iso"), false);
+    assert.equal(spec.includes("[data-iso=\"' + payload.iso"), false);
+    assert.equal(spec.includes("[title=\"' + payload.iso"), false);
   });
 
   it("파일 이름은 spec.ts 로 끝난다", () => {

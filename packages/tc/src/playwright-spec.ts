@@ -1,5 +1,15 @@
 import { CONTROL_KIND, type ControlKind } from "./control-kind.js";
 import type { LocatorStrategy, TestCase } from "./build-test-cases.js";
+import { clickMonthDayHelperLines } from "./click-calendar-day-script.js";
+
+export {
+  CLICK_CALENDAR_DAY_SOURCE,
+  DATE_VALUE_MATCHES_SOURCE,
+  clickMonthDayHelperLines,
+  dateValueMatches,
+  type DayClickPayload,
+  type DayClickResult,
+} from "./click-calendar-day-script.js";
 
 function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -104,37 +114,7 @@ export function generatePlaywrightSpec(
   const startUrl = options.startUrl && /^https?:\/\//u.test(options.startUrl) && options.startUrl !== "https://"
     ? options.startUrl
     : "https://example.com";
-  const helper = [
-    `async function clickMonthDay(calendar: Locator, iso: string): Promise<void> {`,
-    `  const [year, month, day] = iso.split('-').map(Number);`,
-    `  const clicked = await calendar.evaluate((root, payload) => {`,
-    `    const titleRe = new RegExp(payload.year + '\\\\s*년\\\\s*' + payload.month + '\\\\s*월');`,
-    `    const panels = Array.from(root.querySelectorAll('div, section, table'));`,
-    `    const panel = panels.find((el) => {`,
-    `      const text = el.textContent || '';`,
-    `      const headers = text.match(/\\\\d{4}\\\\s*년\\\\s*\\\\d{1,2}\\\\s*월/g) || [];`,
-    `      return titleRe.test(text) && headers.length === 1;`,
-    `    });`,
-    `    if (!panel) return false;`,
-    `    const exact = panel.querySelector('[data-date="' + payload.iso + '"], [data-iso="' + payload.iso + '"], [title="' + payload.iso + '"]');`,
-    `    if (exact) { (exact as HTMLElement).click(); return true; }`,
-    `    const buttons = Array.from(panel.querySelectorAll('button, [role="gridcell"]'));`,
-    `    const target = buttons.find((btn, index) => {`,
-    `      const n = Number((btn.textContent || '').trim());`,
-    `      if (n !== payload.day) return false;`,
-    `      if (btn.getAttribute('aria-disabled') === 'true') return false;`,
-    `      if (/outside|disabled|other-month/.test(btn.className)) return false;`,
-    `      if (index < 7 && n > 7) return false;`,
-    `      if (index > 20 && n < 8) return false;`,
-    `      return true;`,
-    `    }) as HTMLElement | undefined;`,
-    `    if (!target) return false;`,
-    `    target.click();`,
-    `    return true;`,
-    `  }, { year, month, day, iso });`,
-    `  if (!clicked) throw new Error(iso + ' 날짜 칸을 찾지 못했습니다.');`,
-    `}`,
-  ];
+  const helper = clickMonthDayHelperLines();
 
   const lines: string[] = [
     `import { test, expect, type Locator, type Page } from '@playwright/test';`,
