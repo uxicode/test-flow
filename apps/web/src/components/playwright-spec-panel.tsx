@@ -2,6 +2,7 @@ import { useState } from "react";
 
 export function PlaywrightSpecPanel({ spec, fileName }: { spec: string; fileName: string }) {
   const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
 
   function handleCopy(): void {
     void navigator.clipboard.writeText(spec).then(() => {
@@ -23,7 +24,15 @@ export function PlaywrightSpecPanel({ spec, fileName }: { spec: string; fileName
   return (
     <div className="space-y-2 rounded-md border border-sky-800/70 bg-slate-950/80 p-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-medium text-sky-200">Playwright 테스트 코드</p>
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          className="flex items-center gap-1.5 text-xs font-medium text-sky-200 hover:text-sky-100 select-none"
+        >
+          <span className={`inline-block text-[10px] transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
+          Playwright 테스트 코드
+        </button>
         <div className="flex gap-2">
           <button
             type="button"
@@ -41,9 +50,11 @@ export function PlaywrightSpecPanel({ spec, fileName }: { spec: string; fileName
           </button>
         </div>
       </div>
-      <pre className="max-h-[28rem] overflow-auto whitespace-pre rounded bg-slate-900 px-2 py-2 text-[11px] leading-relaxed text-slate-200">
-        {spec}
-      </pre>
+      {open ? (
+        <pre className="max-h-[28rem] overflow-auto whitespace-pre rounded bg-slate-900 px-2 py-2 text-[11px] leading-relaxed text-slate-200">
+          {spec}
+        </pre>
+      ) : null}
     </div>
   );
 }
