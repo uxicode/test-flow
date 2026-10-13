@@ -122,80 +122,64 @@ async function clickCalendarDay(
   for (const monthLabel of monthLabels) {
     ariaDayCandidates.push(
       scope.locator(
-        `[aria-label*="${date.year}"][aria-label*="${monthLabel}"][aria-label*="${dayText}"]`,
-      ),
-      scope.locator(
-        `button[aria-label*="${date.year}"][aria-label*="${monthLabel}"][aria-label*="${dayText}"]`,
+        `[data-date="${key}"], button[data-day="${key}"], [aria-label*="${date.year}"][aria-label*="${monthLabel}"][aria-label*="${dayText}일"], [aria-label*="${date.year}"][aria-label*="${monthLabel}"][aria-label*=" ${dayText}"]`,
       ),
     );
   }
-  // Scoped to the correct month panel when multiple months are visible:
-  // look for a cell that's in a panel/section containing the year+month heading
-  const monthHeadPattern = new RegExp(`${date.year}[^\\d]*${String(date.month).padStart(2, "0")}|${String(date.month)}월`, "iu");
-  const monthPanel = await firstVisible([
-    scope.locator("div, section, table").filter({ has: scope.getByText(monthHeadPattern) }),
-  ]);
-  const scopedToMonth: Locator[] = monthPanel
-    ? [
-        monthPanel.locator(`[data-date="${key}"]`),
-        monthPanel.locator(`button[data-day="${key}"]`),
-        ...ariaDayCandidates.map(() => monthPanel.locator(`[aria-label*="${date.year}"]`)),
-        monthPanel.locator("button", { hasText: new RegExp(`^${dayText}$`, "u") }),
-        monthPanel.locator("td", { hasText: new RegExp(`^${dayText}$`, "u") }),
-      ]
-    : [];
+
+  // 두 달이 동시에 보일 때 '13'이 두 번 나오지 않게, 해당 월 제목을 가진 패널 안에서만 숫자 버튼을 찾는다.
+  const monthTitle = new RegExp(`${date.year}\\s*년\\s*${date.month}\\s*월|${date.year}[^\\d]{0,6}${String(date.month).padStart(2, "0")}`, "u");
+  const panel = scope.locator("div, section, table").filter({ hasText: monthTitle }).last();
+  const panelCount = await panel.count().catch(() => 0);
 
   const candidates: Locator[] = [
     scope.locator(`[data-date="${key}"]`),
     scope.locator(`button[data-day="${key}"]`),
     ...ariaDayCandidates,
-    scope.getByRole("gridcell", {
-      name: new RegExp(`${date.year}.*${date.month}.*${dayText}|${dayText}.*${date.month}.*${date.year}`, "u"),
-    }),
-    ...scopedToMonth,
-    // Day-number-only fallback: use exact match to avoid "1" matching "10","11"…
-    scope.locator("button", { hasText: new RegExp(`^\\s*${dayText}\\s*$`, "u") }),
-    scope.locator("td", { hasText: new RegExp(`^\\s*${dayText}\\s*$`, "u") }),
+    ...(panelCount > 0
+      ? [
+          panel.locator(`[data-date="${key}"]`),
+          panel.locator("button, td, [role='gridcell']", { hasText: new RegExp(`^\\s*${dayText}\\s*$`, "u") }),
+        ]
+      : []),
+    scope.getByRole("gridcell", { name: new RegExp(`^\\s*${dayText}\\s*$`, "u") }),
   ];
   return firstVisible(candidates);
 }
 
+async function shownMonthIndex(scope: Locator): Promise<number | null> {
+  const text = await scope.evaluate((el) => (el as HTMLElement).innerText ?? "").catch(() => "");
+  const match = text.match(/(\d{4})\s*년\s*(\d{1,2})\s*월/u) ?? text.match(/(\d{4})[^\d]{1,6}(\d{1,2})/u);
+  if (!match?.[1] || !match[2]) return null;
+  return Number(match[1]) * 12 + Number(match[2]);
+}
+
 /**
  * 날짜가 보이는 달이 될 때까지 앞/뒤로 이동한다.
- * 최대 14번 시도한다.
+ * 최대 14번 시도한다. 이동 버튼이 없으면 바로 멈춘다.
  */
 async function ensureDayVisible(scope: Locator, date: ParsedDate): Promise<void> {
+  const target = date.year * 12 + date.month;
   for (let attempt = 0; attempt < 14; attempt += 1) {
     const day = await clickCalendarDay(scope, date);
     if (day) return;
 
-    // 현재 달이 목표 달보다 이후인지 이전인지 판단한다
-    const yearText = await scope.locator("*").filter({ hasText: new RegExp(`${date.year}`, "u") }).first().innerText().catch(() => "");
-    const currentMonthMatch = yearText.match(/(\d{4})[^\d]+(\d{1,2})/u);
-    let goBack = false;
-    if (currentMonthMatch?.[1] && currentMonthMatch[2]) {
-      const shownYear = Number(currentMonthMatch[1]);
-      const shownMonth = Number(currentMonthMatch[2]);
-      goBack =
-        shownYear > date.year ||
-        (shownYear === date.year && shownMonth > date.month);
-    }
-
-    if (goBack) {
-      const prev = await firstVisible([
-        scope.getByRole("button", { name: /이전|prev|</iu }),
-        scope.locator('button[aria-label*="이전"], button[aria-label*="Prev"]'),
-      ]);
-      if (prev) await prev.click();
-      else break;
-    } else {
-      const next = await firstVisible([
-        scope.getByRole("button", { name: /다음|next|>/iu }),
-        scope.locator('button[aria-label*="다음"], button[aria-label*="Next"]'),
-      ]);
-      if (next) await next.click();
-      else break;
-    }
+    const shown = await shownMonthIndex(scope);
+    const goBack = shown !== null && shown > target;
+    const nav = await firstVisible(
+      goBack
+        ? [
+            scope.getByRole("button", { name: /이전|prev/iu }),
+            scope.locator('button[aria-label*="이전"], button[aria-label*="Prev"]'),
+          ]
+        : [
+            scope.getByRole("button", { name: /다음|next/iu }),
+            scope.locator('button[aria-label*="다음"], button[aria-label*="Next"]'),
+          ],
+    );
+    if (!nav) break;
+    await nav.click();
+    await scope.page().waitForTimeout(150);
   }
 }
 
@@ -222,46 +206,45 @@ async function locateTriggerBySelector(page: Page, selector: string): Promise<Lo
   return null;
 }
 
+/** 캘린더를 조작한 뒤 트리거 값이 요청 범위와 다를 때. 다른 입력 방식으로 넘기지 않는다. */
+export class DateRangeNotAppliedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DateRangeNotAppliedError";
+  }
+}
+
 /**
  * 트리거에 표시된 텍스트가 요청한 날짜 범위를 포함하는지 검증한다.
  * 실패하면 명확한 에러를 던진다 (무음 통과 금지).
  */
 async function verifySelectedRange(
-  trigger: Locator,
+  readText: () => Promise<string>,
   range: { start: ParsedDate; end: ParsedDate },
 ): Promise<void> {
-  await trigger.page().waitForTimeout(500);
-
-  const text = await trigger
-    .innerText()
-    .catch(async () => trigger.inputValue().catch(() => ""));
+  // 날짜를 고르면 트리거 버튼의 접근 가능 이름이 바뀐다.
+  // 이름 기반 로케이터를 다시 조회하지 않고, 미리 잡아 둔 요소에서 텍스트를 읽는다.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const text = await readText().catch(() => "");
   // 날짜 텍스트 정규화: 구분자를 통일
   const normalized = text.replace(/[.\-/]/gu, "-").replace(/\s+/gu, " ");
 
-  function dateVariants(d: ParsedDate): string[] {
-    const mm = String(d.month).padStart(2, "0");
-    const m = String(d.month);
-    const dd = String(d.day).padStart(2, "0");
-    const d_ = String(d.day);
+  function showsDate(d: ParsedDate): boolean {
     const y = String(d.year);
-    return [
-      `${y}-${mm}-${dd}`,
-      `${y}-${m}-${d_}`,
-      `${mm}-${dd}`,
-      `${m}-${d_}`,
-    ];
+    const months = [String(d.month), String(d.month).padStart(2, "0")];
+    const days = [String(d.day), String(d.day).padStart(2, "0")];
+    return months.some((month) =>
+      days.some((day) => new RegExp(`(?<!\\d)${y}-${month}-${day}(?!\\d)`, "u").test(normalized)),
+    );
   }
 
-  const startVariants = dateVariants(range.start);
-  const endVariants = dateVariants(range.end);
-
-  const hasStart = startVariants.some((v) => normalized.includes(v));
-  const hasEnd = endVariants.some((v) => normalized.includes(v));
+  const hasStart = showsDate(range.start);
+  const hasEnd = showsDate(range.end);
 
   if (!hasStart || !hasEnd) {
     const startKey = isoDateKey(range.start);
     const endKey = isoDateKey(range.end);
-    throw new Error(
+    throw new DateRangeNotAppliedError(
       `날짜 범위가 올바르게 설정되지 않았습니다.\n` +
         `  요청: ${startKey} ~ ${endKey}\n` +
         `  트리거에 표시된 값: "${text.trim() || "(빈 값)"}"\n` +
@@ -285,6 +268,11 @@ export async function applyCustomDateRange(
     (triggerSelector ? await locateTriggerBySelector(page, triggerSelector) : null) ??
     (await locateDatePickerTrigger(page, target));
   if (!trigger) throw new Error(`${target} 날짜 선택 버튼을 찾지 못했습니다.`);
+  const triggerHandle = await trigger.elementHandle();
+  const readTriggerText = async () =>
+    triggerHandle
+      ? triggerHandle.evaluate((el) => (el as HTMLElement).innerText || (el as HTMLInputElement).value || "")
+      : "";
 
   const dialog = await openPickerDialog(page, trigger);
   await pickDay(dialog, range.start);
@@ -293,14 +281,12 @@ export async function applyCustomDateRange(
   await pickDay(dialog, range.end);
 
   const apply = await firstVisible([
-    dialog.getByRole("button", { name: /적용|확인|선택|apply|ok/iu }),
-    page.getByRole("button", { name: /적용|확인|선택|apply|ok/iu }),
+    dialog.getByRole("button", { name: /^(적용|확인|선택|apply|ok)$/iu }),
   ]);
   if (apply) await apply.click();
-  else await page.keyboard.press("Escape").catch(() => undefined);
 
   // 반드시 검증 — 범위가 실제로 반영됐는지 확인한다
-  await verifySelectedRange(trigger, range);
+  await verifySelectedRange(readTriggerText, range);
 
   return trigger;
 }

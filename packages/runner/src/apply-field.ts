@@ -1,6 +1,6 @@
 import { CONTROL_KIND, type ControlKind, type LocatorStrategy, type TcInput } from "@testflow/tc";
 import type { Locator, Page } from "playwright";
-import { applyCustomDateRange, parseDateRangeValue } from "./date-picker.js";
+import { applyCustomDateRange, DateRangeNotAppliedError, parseDateRangeValue } from "./date-picker.js";
 
 /**
  * CSS 모듈 해시 클래스 감지 패턴.
@@ -342,8 +342,8 @@ async function applyUsingSelectorHint(
 async function applyDate(page: Page, target: string, value: string, triggerSelector?: string): Promise<Locator> {
   try {
     return await applyCustomDateRange(page, target, value, triggerSelector);
-  } catch {
-    /* single-day picker도 버튼+dialog일 수 있음 */
+  } catch (error) {
+    if (error instanceof DateRangeNotAppliedError) throw error;
   }
   const pattern = labelPattern(target);
   const field = await firstVisible([
@@ -351,7 +351,14 @@ async function applyDate(page: Page, target: string, value: string, triggerSelec
     page.locator('input[type="date"], input[type="datetime-local"]'),
   ]);
   if (!field) throw new Error(`${target} 날짜 입력을 찾지 못했습니다.`);
-  await field.fill(value || new Date().toISOString().slice(0, 10));
+  const expected = value || new Date().toISOString().slice(0, 10);
+  await field.fill(expected);
+  const actual = await field.inputValue();
+  if (actual !== expected) {
+    throw new DateRangeNotAppliedError(
+      `${target} 날짜가 입력되지 않았습니다. 요청: ${expected}, 실제: "${actual}"`,
+    );
+  }
   return field;
 }
 
@@ -364,14 +371,24 @@ async function applyDateRange(
   try {
     return await applyCustomDateRange(page, target, value, triggerSelector);
   } catch (customError) {
+    if (customError instanceof DateRangeNotAppliedError) throw customError;
     const parsed = parseDateRangeValue(value);
     const group = await locateGroup(page, target);
     const scoped = group ?? page.locator("body");
     const inputs = scoped.locator('input[type="date"], input[type="datetime-local"]');
     const count = await inputs.count();
     if (count >= 2 && parsed) {
-      await inputs.nth(0).fill(isoFromParsed(parsed.start));
-      await inputs.nth(1).fill(isoFromParsed(parsed.end));
+      const startKey = isoFromParsed(parsed.start);
+      const endKey = isoFromParsed(parsed.end);
+      await inputs.nth(0).fill(startKey);
+      await inputs.nth(1).fill(endKey);
+      const actualStart = await inputs.nth(0).inputValue();
+      const actualEnd = await inputs.nth(1).inputValue();
+      if (actualStart !== startKey || actualEnd !== endKey) {
+        throw new DateRangeNotAppliedError(
+          `${target} 기간이 입력되지 않았습니다. 요청: ${startKey} ~ ${endKey}, 실제: "${actualStart}" ~ "${actualEnd}"`,
+        );
+      }
       return inputs.nth(0);
     }
     const detail =
@@ -628,7 +645,10 @@ export async function applyFieldValue(
     log(`⚠ ${input.target}: 셀렉터가 CSS 모듈 해시 클래스(${sel.slice(0, 40)}…)입니다. 빌드마다 바뀌어 취약합니다.`);
   }
 
-  const hinted = await applyUsingSelectorHint(page, input, value, containerSelector).catch(() => null);
+  const hinted = await applyUsingSelectorHint(page, input, value, containerSelector).catch((error: unknown) => {
+    if (error instanceof DateRangeNotAppliedError) throw error;
+    return null;
+  });
   if (hinted) {
     log(`${input.target} · 셀렉터(${input.selectorStrategy ?? "css"}: ${sel})로 조작`);
     await pointAt(hinted);
