@@ -13,6 +13,18 @@ import {
   upsertPinnedSelector,
 } from "@testflow/runner";
 import {
+  applyReview,
+  deleteMatchSet,
+  findLatestMatchSet,
+  listMatchSets,
+  loadMatchSet,
+  matchTcToMap,
+  resolveApprovedSelector,
+  saveMatchSet,
+  saveMatchSetById,
+  type MatchSet,
+} from "@testflow/matcher";
+import {
   buildTestCases,
   deleteTcFile,
   listTcFiles,
@@ -45,8 +57,19 @@ interface ExploreState {
   controller: AbortController;
 }
 
+interface MatchJobState {
+  matchJobId: string;
+  jobId: string;
+  mapId: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  matchId?: string;
+  error?: string;
+  controller: AbortController;
+}
+
 const runs = new Map<string, RunState>();
 const explores = new Map<string, ExploreState>();
+const matchJobs = new Map<string, MatchJobState>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -258,6 +281,116 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // ── 매칭 (Phase 3) ───────────────────────────────────────────────────────
+
+  app.post("/api/matches", async (req, reply) => {
+    const body = isRecord(req.body) ? req.body : {};
+    const jobId = typeof body.jobId === "string" ? body.jobId : "";
+    const mapId = typeof body.mapId === "string" ? body.mapId : "";
+    if (!jobId || !mapId) return reply.code(400).send({ error: "jobId와 mapId가 필요합니다." });
+
+    const job = getJob(jobId);
+    if (!job || job.cases.length === 0) return reply.code(404).send({ error: "TC 케이스를 찾지 못했습니다." });
+
+    let map;
+    try {
+      map = loadElementMap(mapId);
+    } catch {
+      return reply.code(404).send({ error: "요소 맵을 찾지 못했습니다." });
+    }
+
+    const matchJobId = randomUUID();
+    const controller = new AbortController();
+    const state: MatchJobState = { matchJobId, jobId, mapId, status: "running", controller };
+    matchJobs.set(matchJobId, state);
+
+    const textWorker = createOllamaWorker({ model: textModel() });
+
+    void (async () => {
+      try {
+        const matchSet = await matchTcToMap({
+          cases: job.cases,
+          map,
+          mapId,
+          jobId,
+          worker: textWorker,
+          signal: controller.signal,
+          onLog: (msg) => publishLog(matchJobId, msg),
+        });
+        const meta = saveMatchSet(matchSet);
+        state.status = "completed";
+        state.matchId = meta.matchId;
+        publishLog(matchJobId, `매칭 완료 (matchId: ${meta.matchId})`);
+      } catch (error) {
+        if (controller.signal.aborted) {
+          state.status = "cancelled";
+        } else {
+          state.status = "failed";
+          state.error = error instanceof Error ? error.message : "매칭 실패";
+          publishLog(matchJobId, `오류: ${state.error}`);
+        }
+      }
+    })();
+
+    return reply.code(202).send({ matchJobId });
+  });
+
+  app.get("/api/matches/jobs/:matchJobId", async (req, reply) => {
+    const { matchJobId } = req.params as { matchJobId: string };
+    const state = matchJobs.get(matchJobId);
+    if (!state) return reply.code(404).send({ error: "매칭 작업을 찾지 못했습니다." });
+    return { matchJobId: state.matchJobId, jobId: state.jobId, mapId: state.mapId, status: state.status, matchId: state.matchId, error: state.error };
+  });
+
+  app.get("/api/matches", async () => {
+    return { matches: listMatchSets() };
+  });
+
+  app.get("/api/matches/:matchId", async (req, reply) => {
+    const { matchId } = req.params as { matchId: string };
+    try {
+      return loadMatchSet(matchId);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : "매칭 결과 로드 실패" });
+    }
+  });
+
+  app.patch("/api/matches/:matchId/steps/:stepIndex", async (req, reply) => {
+    const { matchId, stepIndex: stepIndexStr } = req.params as { matchId: string; stepIndex: string };
+    const stepIndex = parseInt(stepIndexStr, 10);
+    if (isNaN(stepIndex)) return reply.code(400).send({ error: "stepIndex 는 숫자여야 합니다." });
+    const body = isRecord(req.body) ? req.body : {};
+    const action = typeof body.action === "string" ? body.action : "";
+    if (action !== "approve" && action !== "choose" && action !== "reject") {
+      return reply.code(400).send({ error: "action 은 approve|choose|reject 중 하나여야 합니다." });
+    }
+    const chosenIndex = typeof body.chosenIndex === "number" ? body.chosenIndex : undefined;
+    const note = typeof body.note === "string" ? body.note.trim() : undefined;
+    let set: MatchSet;
+    try {
+      set = loadMatchSet(matchId);
+    } catch {
+      return reply.code(404).send({ error: "매칭 결과를 찾지 못했습니다." });
+    }
+    try {
+      applyReview(set, stepIndex, action, chosenIndex, note);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "검토 적용 실패" });
+    }
+    saveMatchSetById(matchId, set);
+    return { ok: true };
+  });
+
+  app.delete("/api/matches/:matchId", async (req, reply) => {
+    const { matchId } = req.params as { matchId: string };
+    try {
+      deleteMatchSet(matchId);
+      return { ok: true };
+    } catch {
+      return reply.code(404).send({ error: "매칭 결과를 찾지 못했습니다." });
+    }
+  });
+
   app.post("/api/analysis/:jobId/cancel", async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
     const job = getJob(jobId);
@@ -312,12 +445,25 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       typeof body.optionContainerSelector === "string" ? body.optionContainerSelector.trim() : undefined;
     const inputsOverride = parseInputsOverride(body.inputs);
 
+    // 승인된 매칭 결과가 있으면 요소 맵 로케이터를 inputs.selector 에 주입한다
+    const mapFound = findLatestMapByUrl(startUrl);
+    const approvedMatchSet = mapFound
+      ? findLatestMatchSet(jobId, mapFound.mapId)?.set
+      : undefined;
+
+    const resolvedInputs = (inputsOverride ?? testCase.inputs).map((input) => {
+      if (input.selector) return input; // 이미 셀렉터가 있으면 그대로 사용
+      if (!approvedMatchSet) return input;
+      const sel = resolveApprovedSelector(approvedMatchSet, input.target);
+      return sel ? { ...input, selector: sel } : input;
+    });
+
     const mergedCase: TestCase = {
       ...testCase,
       ...(apiPath !== undefined ? { apiPath } : {}),
       ...(assert !== undefined ? { assert } : {}),
       ...(optionContainerSelector !== undefined ? { optionContainerSelector } : {}),
-      ...(inputsOverride ? { inputs: inputsOverride } : {}),
+      inputs: resolvedInputs,
     };
 
     const runId = randomUUID();

@@ -68,6 +68,23 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
       || null;
   }
 
+  function getNearbyText(el) {
+    var maxLen = 40;
+    var prev = el.previousElementSibling;
+    if (prev && ["input", "select", "textarea", "button"].indexOf(prev.tagName.toLowerCase()) < 0) {
+      var prevText = prev.textContent ? prev.textContent.trim() : "";
+      if (prevText.length >= 1 && prevText.length <= maxLen) return prevText;
+    }
+    var parent = el.parentElement;
+    if (parent) {
+      var clone = parent.cloneNode(true);
+      clone.querySelectorAll("input,select,textarea,button").forEach(function (child) { child.remove(); });
+      var parentText = clone.textContent ? clone.textContent.trim() : "";
+      if (parentText.length >= 1 && parentText.length <= maxLen) return parentText;
+    }
+    return null;
+  }
+
   function computeCssPath(el) {
     var id = el.getAttribute("id");
     if (id && /^[A-Za-z][\\w-]*$/.test(id)) return "#" + id;
@@ -135,6 +152,13 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
     var nativeOptions = tag === "select"
       ? Array.prototype.map.call(el.options, function (option) { return option.text.trim(); }).filter(Boolean)
       : [];
+    var ariaLabel = el.getAttribute("aria-label");
+    var domId = el.getAttribute("id");
+    var hasForwardLabel = Boolean(
+      ariaLabel
+      || (domId && document.querySelector('label[for="' + domId + '"]'))
+      || el.getAttribute("aria-labelledby"),
+    );
     results.push({
       label: getAccessibleName(el),
       rawTag: tag,
@@ -142,12 +166,13 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
       rawRole: el.getAttribute("role"),
       ariaHaspopup: el.getAttribute("aria-haspopup"),
       testId: getTestId(el),
-      ariaLabel: el.getAttribute("aria-label"),
+      ariaLabel: ariaLabel,
       labelText: null,
       placeholder: el.getAttribute("placeholder"),
-      domId: el.getAttribute("id"),
+      domId: domId,
       cssPath: computeCssPath(el),
       nativeOptions: nativeOptions,
+      nearbyText: hasForwardLabel ? null : getNearbyText(el),
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
     });
   });

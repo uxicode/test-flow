@@ -1,0 +1,172 @@
+import type { AnalysisWorker } from "@testflow/analyze";
+import type { ScreenElementMap } from "@testflow/runner";
+import { type ControlKind, type TestCase } from "@testflow/tc";
+import { MAX_MODEL_CANDIDATES, modelPickStep } from "./model-match.js";
+import {
+  MATCH_VERSION,
+  type MatchCandidate,
+  type MatchSet,
+  type MatchStatus,
+  type TcStepMatch,
+} from "./match-result.js";
+import { ruleMatchStep } from "./rule-match.js";
+
+/** 자동 승인 임계값. 이 이상이면 human 검토 없이 "matched" 처리. */
+export const EXACT_THRESHOLD = 0.8;
+/** 모델 보조 임계값. 규칙 최고 신뢰도가 이 이상일 때 모델에 맡긴다. */
+export const MODEL_THRESHOLD = 0.5;
+
+/** TC 입력에서 컨트롤 종류를 읽는다. */
+function tcInputKind(input: { control?: ControlKind }): ControlKind | undefined {
+  return input.control;
+}
+
+/** 컨트롤이 버튼 유형(입력 필드가 아님)이면 매칭 대상에서 제외한다. */
+function isInputLikeControl(kind?: ControlKind): boolean {
+  if (!kind) return true;
+  const BUTTON_KINDS: ControlKind[] = [];
+  return !BUTTON_KINDS.includes(kind);
+}
+
+/**
+ * TC 케이스 목록과 요소 맵을 매칭하여 MatchSet 을 생성한다.
+ *
+ * @param cases     - 매칭할 TC 케이스 목록
+ * @param map       - 화면 요소 맵
+ * @param mapId     - 요소 맵 파일 ID (MatchCandidate 에 기록)
+ * @param jobId     - 분석 작업 ID
+ * @param worker    - Ollama 워커 (모델 보조에 사용; 없으면 rule only)
+ * @param signal    - 중단 신호
+ */
+export async function matchTcToMap(options: {
+  cases: TestCase[];
+  map: ScreenElementMap;
+  mapId: string;
+  jobId: string;
+  worker?: AnalysisWorker;
+  signal?: AbortSignal;
+  onLog?: (msg: string) => void;
+}): Promise<MatchSet> {
+  const { cases, map, mapId, jobId, worker, signal } = options;
+  const log = options.onLog ?? (() => undefined);
+
+  const steps: TcStepMatch[] = [];
+  const seen = new Set<string>(); // tcId:target 중복 방지
+
+  for (const tc of cases) {
+    for (const input of tc.inputs) {
+      if (signal?.aborted) throw new Error("사용자가 중지했습니다.");
+
+      const key = `${tc.id}:${input.target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      if (!isInputLikeControl(input.control)) continue;
+
+      const stepKind = tcInputKind(input);
+
+      log(`매칭 중: "${input.target}" (TC: ${tc.title})`);
+
+      // 1단계: 규칙 기반 매칭
+      const ruleHits = ruleMatchStep(input.target, stepKind, map.elements, mapId);
+
+      const candidates: MatchCandidate[] = ruleHits.map((hit) => ({
+        elementMapId: mapId,
+        elementIndex: hit.elementIndex,
+        elementLabel: hit.elementLabel,
+        controlKind: hit.controlKind,
+        bestLocator: hit.bestLocator,
+        confidence: hit.confidence,
+        method: hit.method,
+        reason: hit.reason,
+      }));
+
+      let chosenIndex = candidates.length > 0 ? 0 : -1;
+      let status: MatchStatus = "review";
+
+      const topConfidence = candidates[0]?.confidence ?? 0;
+
+      if (topConfidence >= EXACT_THRESHOLD && !isAmbiguous(candidates)) {
+        // 충분히 높은 신뢰도 + 명확한 1등 → 자동 승인
+        status = "matched";
+        log(`  → 자동 매칭 (신뢰도 ${(topConfidence * 100).toFixed(0)}%): ${candidates[0]?.elementLabel}`);
+      } else if (topConfidence >= MODEL_THRESHOLD && worker && !signal?.aborted) {
+        // 모델 보조
+        const topElements = ruleHits
+          .slice(0, MAX_MODEL_CANDIDATES)
+          .map((h) => map.elements[h.elementIndex]!)
+          .filter(Boolean);
+
+        const pick = await modelPickStep(input.target, stepKind, topElements, worker, signal ?? new AbortController().signal);
+
+        if (pick) {
+          chosenIndex = pick.chosenIndex;
+          // 기존 candidates 에 모델 결정 반영
+          if (candidates[chosenIndex]) {
+            candidates[chosenIndex] = {
+              ...candidates[chosenIndex],
+              confidence: 0.75,
+              method: "model",
+              reason: pick.reason || "모델 선택",
+            };
+          }
+          status = "review"; // 모델 선택도 검토 필요 (확인 후 승인)
+          log(`  → 모델 선택: ${candidates[chosenIndex]?.elementLabel} (검토 필요)`);
+        } else {
+          log(`  → 모델 응답 무효 — 검토 필요`);
+        }
+      } else if (candidates.length === 0) {
+        log(`  → 후보 없음 — 검토 필요`);
+      } else {
+        log(`  → 신뢰도 낮음 (${(topConfidence * 100).toFixed(0)}%) — 검토 필요`);
+      }
+
+      steps.push({
+        tcId: tc.id,
+        stepLabel: input.target,
+        controlKind: input.control,
+        candidates,
+        chosenIndex,
+        status,
+      });
+    }
+  }
+
+  return {
+    $version: MATCH_VERSION,
+    jobId,
+    mapId,
+    createdAt: new Date().toISOString(),
+    steps,
+  };
+}
+
+/** 상위 두 후보의 신뢰도 차이가 작아서 애매한지 확인한다. */
+function isAmbiguous(candidates: MatchCandidate[]): boolean {
+  if (candidates.length < 2) return false;
+  const gap = (candidates[0]?.confidence ?? 0) - (candidates[1]?.confidence ?? 0);
+  return gap < 0.1;
+}
+
+/** 실행 시 매칭 결과에서 스텝 레이블에 해당하는 승인된 CSS 셀렉터를 찾는다. */
+export function resolveApprovedSelector(set: MatchSet, stepLabel: string): string | undefined {
+  const step = set.steps.find((s) => s.stepLabel === stepLabel);
+  if (!step) return undefined;
+  if (step.status !== "matched" && step.status !== "approved") return undefined;
+  if (step.chosenIndex < 0) return undefined;
+
+  const candidate = step.candidates[step.chosenIndex];
+  if (!candidate) return undefined;
+
+  const loc = candidate.bestLocator;
+  // CSS-compatible 전략만 selector 로 사용 가능
+  if (loc.strategy === "testid" || loc.strategy === "css") return loc.value;
+  if (loc.strategy === "nearby-text" || loc.strategy === "label" || loc.strategy === "placeholder") return undefined;
+  if (loc.strategy === "role+name") {
+    // [role="X"][aria-label="Y"] 형태로 변환 시도
+    const [role, name] = loc.value.split("|");
+    if (role && name) return `[role="${role}"][aria-label="${name}"]`;
+  }
+  return undefined;
+}
+

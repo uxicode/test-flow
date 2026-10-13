@@ -14,6 +14,10 @@ import {
   type ExploreView,
   type LocatorCandidate,
   type LogEvent,
+  type MatchJobView,
+  type MatchListView,
+  type MatchSet,
+  type MatchSetMeta,
   type RunView,
   type ScreenElementMap,
   type ServerConfig,
@@ -112,6 +116,14 @@ export function App() {
   const [selectedMap, setSelectedMap] = useState<ScreenElementMap | null>(null);
   const [isBusyExplore, setIsBusyExplore] = useState(false);
   const exploreSocketRef = useRef<WebSocket | null>(null);
+  // Phase 3: 매칭 + 검토
+  const [matchJobId, setMatchJobId] = useState("");
+  const [matchJobStatus, setMatchJobStatus] = useState<MatchJobView["status"] | "">("");
+  const [currentMatchId, setCurrentMatchId] = useState("");
+  const [matchSet, setMatchSet] = useState<MatchSet | null>(null);
+  const [matchList, setMatchList] = useState<MatchSetMeta[]>([]);
+  const [showMatchList, setShowMatchList] = useState(false);
+  const [isBusyMatch, setIsBusyMatch] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -120,6 +132,27 @@ export function App() {
       exploreSocketRef.current?.close();
     };
   }, []);
+
+  // 매칭 작업 폴링
+  useEffect(() => {
+    if (!matchJobId || matchJobStatus === "completed" || matchJobStatus === "failed" || matchJobStatus === "cancelled") return;
+    const timer = window.setInterval(() => {
+      void getJson<MatchJobView>(`/api/matches/jobs/${matchJobId}`)
+        .then((view) => {
+          setMatchJobStatus(view.status);
+          if (view.status !== "running") {
+            window.clearInterval(timer);
+            if (view.status === "completed" && view.matchId) {
+              setCurrentMatchId(view.matchId);
+              void loadMatchSetDetail(view.matchId);
+            }
+          }
+        })
+        .catch(() => undefined);
+    }, 1200);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchJobId, matchJobStatus]);
 
   useEffect(() => {
     writeStored(STORED_FIGMA_URL, figmaUrl);
@@ -415,6 +448,44 @@ export function App() {
     }
   }
 
+  // ── Phase 3: 매칭 핸들러 ──────────────────────────────────────────────────
+
+  async function loadMatchSetDetail(id: string) {
+    const set = await getJson<MatchSet>(`/api/matches/${id}`);
+    setMatchSet(set);
+    setCurrentMatchId(id);
+  }
+
+  async function loadMatchList() {
+    const res = await getJson<MatchListView>("/api/matches");
+    setMatchList(res.matches);
+  }
+
+  async function handleStartMatch(mapId: string) {
+    if (!jobId) { setErrorMessage("먼저 분석을 실행해 TC 케이스를 생성하세요."); return; }
+    setIsBusyMatch(true);
+    setMatchJobStatus("running");
+    try {
+      const res = await postJson<{ matchJobId: string }>("/api/matches", { jobId, mapId });
+      setMatchJobId(res.matchJobId);
+    } catch (error) {
+      setMatchJobStatus("failed");
+      setErrorMessage(error instanceof Error ? error.message : "매칭 시작 실패");
+    } finally {
+      setIsBusyMatch(false);
+    }
+  }
+
+  async function handleReviewAction(stepIndex: number, action: "approve" | "choose" | "reject", chosenIndex?: number) {
+    if (!currentMatchId) return;
+    try {
+      await postJson(`/api/matches/${currentMatchId}/steps/${stepIndex}`, { action, chosenIndex });
+      await loadMatchSetDetail(currentMatchId);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "검토 저장 실패");
+    }
+  }
+
   async function handleCancelRun() {
     const startedAt = Date.now();
     setBusyAction("stop-run");
@@ -700,6 +771,157 @@ export function App() {
               ))}
             </ul>
           )
+        )}
+      </section>
+
+      {/* Phase 3: 매칭 + 검토 */}
+      <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+        <h2 className="text-sm font-medium">TC-요소 매칭 <span className="ml-1 rounded bg-purple-900/60 px-1.5 py-0.5 text-[10px] text-purple-300">Phase 3</span></h2>
+        <p className="text-xs text-slate-400">
+          TC 입력 레이블과 요소 맵을 매칭합니다. 규칙 매칭 → 모델 보조(gemma2:9b) → 사람 검토 순서로 진행합니다.
+        </p>
+
+        {elementMaps.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs text-slate-400">요소 맵을 선택해 매칭 시작:</p>
+            <div className="flex flex-wrap gap-2">
+              {elementMaps.slice(0, 5).map((m: ElementMapMeta) => (
+                <button
+                  key={m.mapId}
+                  type="button"
+                  disabled={isBusyMatch || matchJobStatus === "running" || !jobId}
+                  className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+                  onClick={() => void handleStartMatch(m.mapId)}
+                >
+                  {m.screenTitle || m.url} ({m.elementCount}개)
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {matchJobStatus ? (
+          <p className="text-xs text-slate-400">
+            매칭 상태:{" "}
+            <span className={matchJobStatus === "completed" ? "text-emerald-400" : matchJobStatus === "failed" ? "text-rose-400" : "text-amber-400"}>
+              {matchJobStatus}
+            </span>
+            {currentMatchId && <span className="ml-2 text-slate-500">(matchId: {currentMatchId.slice(0, 12)}…)</span>}
+          </p>
+        ) : null}
+
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-slate-500">저장된 매칭 결과</span>
+          <button
+            type="button"
+            className="text-xs text-sky-400 hover:text-sky-300"
+            onClick={() => {
+              setShowMatchList((p) => !p);
+              if (!showMatchList) void loadMatchList();
+            }}
+          >
+            {showMatchList ? "접기" : "목록 보기"}
+          </button>
+        </div>
+        {showMatchList && (
+          matchList.length === 0 ? (
+            <p className="text-xs text-slate-500">저장된 매칭 결과가 없습니다.</p>
+          ) : (
+            <ul className="space-y-1">
+              {matchList.map((m: MatchSetMeta) => (
+                <li key={m.matchId} className="flex items-center justify-between gap-3 rounded border border-slate-700 px-3 py-2 text-xs">
+                  <span className="text-slate-300">
+                    매칭 {new Date(m.createdAt).toLocaleString("ko-KR")}
+                    <span className="ml-2 text-slate-500">전체 {m.totalSteps}개 · 검토 {m.reviewCount}개 · 완료 {m.matchedCount}개</span>
+                  </span>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded bg-purple-700/40 px-2 py-0.5 text-purple-300 hover:bg-purple-700/60"
+                    onClick={() => void loadMatchSetDetail(m.matchId)}
+                  >
+                    검토
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )
+        )}
+
+        {matchSet && (
+          <div className="space-y-3 rounded border border-slate-700 bg-slate-950/60 p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-slate-300">매칭 검토</p>
+              <span className="text-[10px] text-slate-500">
+                검토 필요: {matchSet.steps.filter((s) => s.status === "review").length} / 전체 {matchSet.steps.length}
+              </span>
+            </div>
+            <ul className="space-y-2 max-h-96 overflow-y-auto">
+              {matchSet.steps.map((step, stepIdx: number) => (
+                <li
+                  key={`${step.tcId}-${step.stepLabel}-${stepIdx}`}
+                  className={`rounded border p-2.5 text-xs ${
+                    step.status === "matched" || step.status === "approved"
+                      ? "border-emerald-800/60 bg-emerald-950/30"
+                      : step.status === "rejected"
+                        ? "border-rose-800/60 bg-rose-950/30"
+                        : "border-amber-800/60 bg-amber-950/30"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="font-medium text-slate-200">"{step.stepLabel}"</span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      step.status === "matched" || step.status === "approved"
+                        ? "bg-emerald-900/50 text-emerald-300"
+                        : step.status === "rejected"
+                          ? "bg-rose-900/50 text-rose-300"
+                          : "bg-amber-900/50 text-amber-300"
+                    }`}>{step.status}</span>
+                  </div>
+                  {step.candidates.length === 0 ? (
+                    <p className="text-slate-500">후보 없음</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {step.candidates.slice(0, 5).map((c, ci: number) => (
+                        <label key={ci} className="flex items-start gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name={`match-step-${stepIdx}`}
+                            checked={step.chosenIndex === ci}
+                            onChange={() => void handleReviewAction(stepIdx, "choose", ci)}
+                            className="mt-0.5 accent-purple-400"
+                          />
+                          <span className="text-slate-300">
+                            <span className="font-medium">{c.elementLabel}</span>
+                            <span className="ml-1 text-slate-500">({c.controlKind})</span>
+                            <span className="ml-2 text-slate-600">[{c.method} {Math.round(c.confidence * 100)}%]</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  {(step.status === "review" || step.status === "matched") && (
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        disabled={step.chosenIndex < 0}
+                        className="rounded bg-emerald-700/40 px-2 py-0.5 text-emerald-300 hover:bg-emerald-700/60 disabled:opacity-40"
+                        onClick={() => void handleReviewAction(stepIdx, "approve")}
+                      >
+                        승인
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded bg-rose-700/40 px-2 py-0.5 text-rose-300 hover:bg-rose-700/60"
+                        onClick={() => void handleReviewAction(stepIdx, "reject")}
+                      >
+                        거부
+                      </button>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </section>
 

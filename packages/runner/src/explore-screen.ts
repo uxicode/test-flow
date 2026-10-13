@@ -26,6 +26,8 @@ interface RawElement {
   domId: string | null;
   cssPath: string;
   nativeOptions: string[];
+  /** 폼 연결이 없지만 요소 근처에 보이는 텍스트 (preceding sibling / 부모 텍스트) */
+  nearbyText: string | null;
   rect: { x: number; y: number; width: number; height: number };
 }
 
@@ -60,7 +62,7 @@ function classifyControlKind(raw: RawElement): ControlKind {
 function buildLocatorCandidates(raw: RawElement): LocatorCandidate[] {
   const candidates: LocatorCandidate[] = [];
 
-  // 1. testid
+  // 1. testid (가장 안정적)
   if (raw.testId) {
     candidates.push({ strategy: "testid", value: `[data-testid="${raw.testId}"]` });
   }
@@ -77,12 +79,17 @@ function buildLocatorCandidates(raw: RawElement): LocatorCandidate[] {
     candidates.push({ strategy: "label", value: raw.label });
   }
 
-  // 4. placeholder
+  // 4. nearby text (비연결 근접 텍스트 — label보다 신뢰도 낮음)
+  if (raw.nearbyText && raw.nearbyText !== raw.label) {
+    candidates.push({ strategy: "nearby-text", value: raw.nearbyText });
+  }
+
+  // 5. placeholder
   if (raw.placeholder) {
     candidates.push({ strategy: "placeholder", value: raw.placeholder });
   }
 
-  // 5. CSS (폴백)
+  // 6. CSS (폴백)
   if (raw.cssPath) {
     candidates.push({ strategy: "css", value: raw.cssPath });
   }
