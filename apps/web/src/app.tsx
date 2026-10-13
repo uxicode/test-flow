@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionButton } from "./components/action-button";
 import { LogPanel } from "./components/log-panel";
+import { PlaywrightSpecPanel } from "./components/playwright-spec-panel";
 import { TcDocument } from "./components/tc-document";
 import type { TcInput } from "@testflow/tc";
+import { generatePlaywrightSpec, playwrightSpecFileName } from "@testflow/tc/playwright-spec";
 import {
   getJson,
   isHashedCssModuleClient,
@@ -1284,6 +1286,13 @@ export function App() {
                   </div>
                 </div>
               </details>
+              <PlaywrightSpecPanel
+                spec={generatePlaywrightSpec(testCase, {
+                  startUrl,
+                  values: documentValues[testCase.id],
+                })}
+                fileName={playwrightSpecFileName(testCase.title)}
+              />
               <ActionButton
                 label="이 TC 실행"
                 variant="sky"
