@@ -637,7 +637,10 @@ export async function applyFieldValue(
   const control: ControlKind = input.control ?? CONTROL_KIND.text;
   const value = input.value ?? "";
   const containerSelector = runOptions?.optionContainerSelector;
-  const triggerSelector = input.selector?.trim();
+  const triggerSelector =
+    input.selector?.trim() && !isHashedCssModule(input.selector)
+      ? input.selector.trim()
+      : undefined;
   let locator: Locator;
 
   const sel = input.selector?.trim();
