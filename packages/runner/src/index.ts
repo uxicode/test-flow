@@ -1,4 +1,5 @@
 export { valuesForCase } from "./case-values.js";
+export { isHashedCssModule, HASHED_CSS_MODULE_PATTERN } from "./apply-field.js";
 export {
   deleteElementMap,
   ELEMENT_MAP_VERSION,

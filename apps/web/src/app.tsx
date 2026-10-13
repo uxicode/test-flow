@@ -5,6 +5,8 @@ import { TcDocument } from "./components/tc-document";
 import type { TcInput } from "@testflow/tc";
 import {
   getJson,
+  isHashedCssModuleClient,
+  locatorCodeSnippet,
   openLogSocket,
   postJson,
   type AnalysisView,
@@ -13,6 +15,7 @@ import {
   type ElementMapMeta,
   type ExploreView,
   type LocatorCandidate,
+  type LocatorStrategy,
   type LogEvent,
   type MatchJobView,
   type MatchListView,
@@ -506,6 +509,15 @@ export function App() {
   function controlLabel(input: TcInput): string {
     if (!input.control || input.control === "text") return "";
     return ` (${input.control})`;
+  }
+
+  function locatorSource(input: TcInput): { strategy: LocatorStrategy; value: string; source: string } | null {
+    if (!input.selector) return null;
+    const strategy: LocatorStrategy = (input.selectorStrategy as LocatorStrategy | undefined) ?? "css";
+    const source = input.selectorStrategy && input.selectorStrategy !== "css"
+      ? "매칭 결과"
+      : "셀렉터 피커";
+    return { strategy, value: input.selector, source };
   }
 
   function inputLine(testCase: TestCase, input: TcInput): string {
@@ -1020,9 +1032,39 @@ export function App() {
                         onChange={(event) =>
                           updateInputField(testCase.id, input.target, {
                             selector: event.target.value,
+                            selectorStrategy: undefined,
                           })
                         }
                       />
+                      {/* 실행 계획 투명성 */}
+                      {(() => {
+                        const loc = locatorSource(input);
+                        if (!loc) return (
+                          <p className="text-[10px] text-slate-600 mt-0.5">
+                            실행 시: 레이블 "{input.target}" 로 자동 탐색
+                          </p>
+                        );
+                        const isHashed = isHashedCssModuleClient(loc.value);
+                        return (
+                          <div className="mt-1 space-y-0.5">
+                            {isHashed && (
+                              <p className="text-[10px] text-amber-400">
+                                ⚠ CSS 모듈 해시 클래스 감지 — 빌드마다 셀렉터가 바뀔 수 있습니다. 셀렉터를 다시 고르거나 탐색을 다시 실행하세요.
+                              </p>
+                            )}
+                            <p className="text-[10px] text-slate-500">
+                              로케이터: <span className="text-slate-400">[{loc.strategy}]</span> {loc.value.slice(0, 60)}{loc.value.length > 60 ? "…" : ""}
+                              <span className="ml-2 text-slate-600">({loc.source})</span>
+                            </p>
+                            <details className="mt-0.5">
+                              <summary className="cursor-pointer text-[10px] text-slate-600 hover:text-slate-400">코드 스니펫 보기</summary>
+                              <pre className="mt-1 overflow-x-auto rounded bg-slate-900 px-2 py-1 text-[10px] text-slate-300 select-all whitespace-pre-wrap">
+                                {locatorCodeSnippet(loc.strategy, loc.value, input.control)}
+                              </pre>
+                            </details>
+                          </div>
+                        );
+                      })()}
                       {input.options && input.options.length > 0 ? (
                         <select
                           className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
