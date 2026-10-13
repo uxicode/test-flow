@@ -14,6 +14,7 @@ export interface ExploreJobOptions {
 async function loginIfNeeded(
   page: import("playwright").Page,
   login: { email: string; password: string },
+  startUrl: string,
   log: (msg: string) => void,
 ): Promise<void> {
   const passwordInput = page.locator('input[type="password"]').first();
@@ -34,12 +35,21 @@ async function loginIfNeeded(
     .locator('button, input[type="submit"]')
     .filter({ hasText: /로그인|sign.?in|login/iu })
     .first();
-  if (await loginBtn.isVisible().catch(() => false)) {
-    await loginBtn.click({ timeout: 3000 });
-    await passwordInput.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => undefined);
-    await page.waitForLoadState("domcontentloaded").catch(() => undefined);
-    log("로그인 완료");
+  if (!(await loginBtn.isVisible().catch(() => false))) throw new Error("로그인 버튼을 찾지 못했습니다.");
+  await loginBtn.click({ timeout: 3000 });
+  const signedIn = await passwordInput
+    .waitFor({ state: "hidden", timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!signedIn) throw new Error("공통 계정으로 로그인하지 못했습니다.");
+  log("로그인 완료");
+
+  // 로그인 뒤 사이트가 다른 화면(대시보드 등)으로 보내므로 탐색할 화면으로 다시 들어간다
+  await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  if (await passwordInput.isVisible().catch(() => false)) {
+    throw new Error("로그인 뒤에도 시작 화면에 들어가지 못했습니다.");
   }
+  log(`시작 화면으로 이동: ${page.url()}`);
 }
 
 /**
@@ -69,7 +79,7 @@ export async function runExploreJob(options: ExploreJobOptions): Promise<string>
     await page.goto(options.startUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
     if (options.login?.email && options.login.password) {
-      await loginIfNeeded(page, options.login, log);
+      await loginIfNeeded(page, options.login, options.startUrl, log);
     }
 
     if (options.signal?.aborted) throw new Error("사용자가 중지했습니다.");
