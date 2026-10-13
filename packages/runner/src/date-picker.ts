@@ -1,4 +1,5 @@
 import type { Locator, Page } from "playwright";
+import { CLICK_CALENDAR_DAY_SOURCE } from "./date-picker-day-script.js";
 
 export interface ParsedDate {
   year: number;
@@ -78,10 +79,12 @@ export async function locateDatePickerTrigger(
     const pattern = labelPattern(label);
     const found = await firstVisible([
       page.getByRole("button", { name: pattern }),
+      page.getByRole("textbox", { name: pattern }),
+      page.getByLabel(pattern),
       page.locator(`button[aria-label="${label}"]`),
       page.locator(`button[aria-label*="${label}"]`),
       page.locator('button[aria-haspopup="dialog"]', { has: page.getByText(pattern) }),
-      page.locator("button", { has: page.locator("span", { hasText: /\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}/u }) }),
+      page.locator("button, input, [role='textbox']", { has: page.locator("span", { hasText: /\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}/u }) }),
     ]);
     if (found) return found;
   }
@@ -107,51 +110,42 @@ export function isoDateKey(date: ParsedDate): string {
   return `${date.year}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`;
 }
 
-function monthVariants(month: number): string[] {
-  return [String(month), String(month).padStart(2, "0")];
+function sameDate(a: ParsedDate, b: ParsedDate): boolean {
+  return a.year === b.year && a.month === b.month && a.day === b.day;
 }
 
-async function clickCalendarDay(
-  scope: Locator,
-  date: ParsedDate,
-): Promise<Locator | null> {
-  const key = isoDateKey(date);
-  const dayText = String(date.day);
-  const monthLabels = monthVariants(date.month);
-  const ariaDayCandidates: Locator[] = [];
-  for (const monthLabel of monthLabels) {
-    ariaDayCandidates.push(
-      scope.locator(
-        `[data-date="${key}"], button[data-day="${key}"], [aria-label*="${date.year}"][aria-label*="${monthLabel}"][aria-label*="${dayText}일"], [aria-label*="${date.year}"][aria-label*="${monthLabel}"][aria-label*=" ${dayText}"]`,
-      ),
-    );
-  }
-
-  // 두 달이 동시에 보일 때 '13'이 두 번 나오지 않게, 해당 월 제목을 가진 패널 안에서만 숫자 버튼을 찾는다.
-  const monthTitle = new RegExp(`${date.year}\\s*년\\s*${date.month}\\s*월|${date.year}[^\\d]{0,6}${String(date.month).padStart(2, "0")}`, "u");
-  const panel = scope.locator("div, section, table").filter({ hasText: monthTitle }).last();
-  const panelCount = await panel.count().catch(() => 0);
-
-  const candidates: Locator[] = [
-    scope.locator(`[data-date="${key}"]`),
-    scope.locator(`button[data-day="${key}"]`),
-    ...ariaDayCandidates,
-    ...(panelCount > 0
-      ? [
-          panel.locator(`[data-date="${key}"]`),
-          panel.locator("button, td, [role='gridcell']", { hasText: new RegExp(`^\\s*${dayText}\\s*$`, "u") }),
-        ]
-      : []),
-    scope.getByRole("gridcell", { name: new RegExp(`^\\s*${dayText}\\s*$`, "u") }),
-  ];
-  return firstVisible(candidates);
+export function displayedRangeMatches(
+  text: string,
+  range: { start: ParsedDate; end: ParsedDate },
+): boolean {
+  const parsed = parseDateRangeValue(text);
+  if (!parsed) return false;
+  return sameDate(parsed.start, range.start) && sameDate(parsed.end, range.end);
 }
 
-async function shownMonthIndex(scope: Locator): Promise<number | null> {
+type DayClickPayload = { year: number; month: number; day: number; key: string; doClick: boolean };
+
+async function clickCalendarDay(scope: Locator, date: ParsedDate, doClick: boolean): Promise<boolean> {
+  const payload: DayClickPayload = {
+    year: date.year,
+    month: date.month,
+    day: date.day,
+    key: isoDateKey(date),
+    doClick,
+  };
+  const clicker = new Function("el", "payload", `return (${CLICK_CALENDAR_DAY_SOURCE})(el, payload);`) as (
+    el: Element,
+    arg: DayClickPayload,
+  ) => boolean;
+  return scope.evaluate(clicker, payload).catch(() => false);
+}
+
+async function shownMonthRange(scope: Locator): Promise<{ first: number; last: number } | null> {
   const text = await scope.evaluate((el) => (el as HTMLElement).innerText ?? "").catch(() => "");
-  const match = text.match(/(\d{4})\s*년\s*(\d{1,2})\s*월/u) ?? text.match(/(\d{4})[^\d]{1,6}(\d{1,2})/u);
-  if (!match?.[1] || !match[2]) return null;
-  return Number(match[1]) * 12 + Number(match[2]);
+  const matches = [...text.matchAll(/(\d{4})\s*년\s*(\d{1,2})\s*월/gu)];
+  if (!matches.length) return null;
+  const idxs = matches.map((match) => Number(match[1]) * 12 + Number(match[2]));
+  return { first: Math.min(...idxs), last: Math.max(...idxs) };
 }
 
 /**
@@ -161,19 +155,19 @@ async function shownMonthIndex(scope: Locator): Promise<number | null> {
 async function ensureDayVisible(scope: Locator, date: ParsedDate): Promise<void> {
   const target = date.year * 12 + date.month;
   for (let attempt = 0; attempt < 14; attempt += 1) {
-    const day = await clickCalendarDay(scope, date);
-    if (day) return;
+    if (await clickCalendarDay(scope, date, false)) return;
 
-    const shown = await shownMonthIndex(scope);
-    const goBack = shown !== null && shown > target;
+    const shown = await shownMonthRange(scope);
+    if (shown && target >= shown.first && target <= shown.last) break;
+    const goBack = shown !== null && target < shown.first;
     const nav = await firstVisible(
       goBack
         ? [
-            scope.getByRole("button", { name: /이전|prev/iu }),
+            scope.getByRole("button", { name: /이전|prev|‹|</iu }),
             scope.locator('button[aria-label*="이전"], button[aria-label*="Prev"]'),
           ]
         : [
-            scope.getByRole("button", { name: /다음|next/iu }),
+            scope.getByRole("button", { name: /다음|next|›|>/iu }),
             scope.locator('button[aria-label*="다음"], button[aria-label*="Next"]'),
           ],
     );
@@ -183,12 +177,10 @@ async function ensureDayVisible(scope: Locator, date: ParsedDate): Promise<void>
   }
 }
 
-async function pickDay(scope: Locator, date: ParsedDate): Promise<Locator> {
+async function pickDay(scope: Locator, date: ParsedDate): Promise<void> {
   await ensureDayVisible(scope, date);
-  const day = await clickCalendarDay(scope, date);
-  if (!day) throw new Error(`${isoDateKey(date)} 날짜 칸을 찾지 못했습니다.`);
-  await day.click();
-  return day;
+  if (await clickCalendarDay(scope, date, true)) return;
+  throw new Error(`${isoDateKey(date)} 날짜 칸을 찾지 못했습니다.`);
 }
 
 /** CSS 모듈 해시 클래스 감지 패턴 (날짜 트리거로 사용하지 않는다). */
@@ -201,7 +193,11 @@ async function locateTriggerBySelector(page: Page, selector: string): Promise<Lo
   if (HASHED_CSS_PATTERN.test(trimmed)) return null;
   const candidate = page.locator(trimmed).first();
   if (await candidate.count().catch(() => 0)) {
-    if (await candidate.isVisible().catch(() => false)) return candidate;
+    if (await candidate.isVisible().catch(() => false)) {
+      const dayLike = await candidate.locator('button, [role="gridcell"]').count().catch(() => 0);
+      if (dayLike >= 20) return null;
+      return candidate;
+    }
   }
   return null;
 }
@@ -226,31 +222,20 @@ async function verifySelectedRange(
   // 이름 기반 로케이터를 다시 조회하지 않고, 미리 잡아 둔 요소에서 텍스트를 읽는다.
   await new Promise((resolve) => setTimeout(resolve, 300));
   const text = await readText().catch(() => "");
-  // 날짜 텍스트 정규화: 구분자를 통일
-  const normalized = text.replace(/[.\-/]/gu, "-").replace(/\s+/gu, " ");
+  const startKey = isoDateKey(range.start);
+  const endKey = isoDateKey(range.end);
+  if (displayedRangeMatches(text, range)) return;
 
-  function showsDate(d: ParsedDate): boolean {
-    const y = String(d.year);
-    const months = [String(d.month), String(d.month).padStart(2, "0")];
-    const days = [String(d.day), String(d.day).padStart(2, "0")];
-    return months.some((month) =>
-      days.some((day) => new RegExp(`(?<!\\d)${y}-${month}-${day}(?!\\d)`, "u").test(normalized)),
-    );
-  }
-
-  const hasStart = showsDate(range.start);
-  const hasEnd = showsDate(range.end);
-
-  if (!hasStart || !hasEnd) {
-    const startKey = isoDateKey(range.start);
-    const endKey = isoDateKey(range.end);
-    throw new DateRangeNotAppliedError(
-      `날짜 범위가 올바르게 설정되지 않았습니다.\n` +
-        `  요청: ${startKey} ~ ${endKey}\n` +
-        `  트리거에 표시된 값: "${text.trim() || "(빈 값)"}"\n` +
-        `  시작일 확인: ${hasStart ? "✓" : "✗"}  종료일 확인: ${hasEnd ? "✓" : "✗"}`,
-    );
-  }
+  const parsed = parseDateRangeValue(text);
+  const actual = parsed
+    ? `${isoDateKey(parsed.start)} ~ ${isoDateKey(parsed.end)}`
+    : text.trim() || "(빈 값)";
+  throw new DateRangeNotAppliedError(
+    `날짜 범위가 요청과 정확히 일치하지 않습니다.\n` +
+      `  요청: ${startKey} ~ ${endKey}\n` +
+      `  트리거에 표시된 값: "${text.trim() || "(빈 값)"}"\n` +
+      `  해석된 범위: ${actual}`,
+  );
 }
 
 export async function applyCustomDateRange(

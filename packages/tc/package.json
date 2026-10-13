@@ -11,6 +11,10 @@
     "./export": {
       "types": "./src/export-document.ts",
       "import": "./src/export-document.ts"
+    },
+    "./playwright-spec": {
+      "types": "./src/playwright-spec.ts",
+      "import": "./src/playwright-spec.ts"
     }
   },
   "scripts": {

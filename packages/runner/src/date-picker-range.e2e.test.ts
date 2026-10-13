@@ -12,7 +12,12 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import { chromium } from "playwright";
-import { applyCustomDateRange, parseDateRangeValue, parseSingleDate } from "./date-picker.js";
+import {
+  applyCustomDateRange,
+  displayedRangeMatches,
+  parseDateRangeValue,
+  parseSingleDate,
+} from "./date-picker.js";
 import { isHashedCssModule } from "./apply-field.js";
 
 // ---------------------------------------------------------------------------
@@ -26,68 +31,100 @@ const FIXTURE_HTML = `<!DOCTYPE html>
   <title>날짜 범위 픽커 테스트</title>
   <style>
     body { font-family: sans-serif; padding: 20px; background: #1e1e2e; color: #cdd6f4; }
+    label { display: block; font-size: 13px; margin-bottom: 6px; }
     #trigger { padding: 8px 12px; border: 1px solid #585b70; background: #313244;
                color: #cdd6f4; cursor: pointer; border-radius: 6px; min-width: 220px; text-align:left; }
-    #calendar { display: none; border: 1px solid #585b70; background: #313244;
-                padding: 12px; border-radius: 8px; margin-top: 8px; }
-    #calendar.open { display: flex; gap: 20px; }
+    #calendar { display: none; border: 1px solid #585b70; background: #fff;
+                color: #1e1e2e; padding: 12px; border-radius: 8px; margin-top: 8px; }
+    #calendar.open { display: flex; gap: 28px; }
+    .month-panel { min-width: 230px; }
+    .month-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-weight: bold; }
+    .month-head button { border: none; background: transparent; cursor: pointer; font-size: 16px; }
+    .dow { display: grid; grid-template-columns: repeat(7, 32px); gap: 2px; font-size: 11px; color: #888; text-align: center; margin-bottom: 4px; }
     .month-grid { display: grid; grid-template-columns: repeat(7, 32px); gap: 2px; }
-    .month-title { font-weight: bold; text-align: center; margin-bottom: 8px; }
     .day-btn { width: 32px; height: 32px; border: none; background: transparent;
-               color: #cdd6f4; cursor: pointer; border-radius: 4px; font-size: 13px; }
-    .day-btn:hover { background: #45475a; }
-    .day-btn.selected { background: #89b4fa; color: #1e1e2e; }
-    .day-btn.in-range { background: #313244; outline: 1px solid #89b4fa; }
-    .day-btn.empty { cursor: default; }
+               color: #1e1e2e; cursor: pointer; border-radius: 16px; font-size: 13px; }
+    .day-btn.outside { color: #c4c4c4; }
+    .day-btn.today { background: #1e1e2e; color: #fff; }
+    .day-btn.selected { background: #3b82f6; color: #fff; }
+    .day-btn.in-range { background: #dbeafe; }
   </style>
 </head>
 <body>
+  <label for="trigger">등록일</label>
   <button id="trigger" aria-expanded="false" aria-haspopup="dialog">기간 선택</button>
-  <div id="calendar" role="dialog">
-    <div id="oct-panel">
-      <div class="month-title">2026년 10월</div>
-      <div class="month-grid" id="oct-grid"></div>
-    </div>
-    <div id="nov-panel">
-      <div class="month-title">2026년 11월</div>
-      <div class="month-grid" id="nov-grid"></div>
-    </div>
-  </div>
+  <div id="calendar" class="calendar _root_du6a0_1 _calendar_o7hka_89" role="dialog"></div>
   <script>
-    const state = { start: null, end: null };
+    const TODAY = '2026-10-13';
+    const state = { start: null, end: null, left: { y: 2026, m: 10 } };
 
-    function renderMonth(gridId, year, month, offset) {
-      const grid = document.getElementById(gridId);
+    function iso(y, m, d) {
+      return y + '-' + String(m).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+    }
+    function addMonth(y, m, delta) {
+      const d = new Date(y, m - 1 + delta, 1);
+      return { y: d.getFullYear(), m: d.getMonth() + 1 };
+    }
+
+    function render() {
+      const cal = document.getElementById('calendar');
+      const left = state.left;
+      const right = addMonth(left.y, left.m, 1);
+      cal.innerHTML = monthHtml(left.y, left.m, 'left') + monthHtml(right.y, right.m, 'right');
+      cal.querySelectorAll('[data-nav]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const dir = Number(btn.getAttribute('data-nav'));
+          state.left = addMonth(state.left.y, state.left.m, dir);
+          render();
+        });
+      });
+      cal.querySelectorAll('.day-btn').forEach((btn) => {
+        btn.addEventListener('click', () => pickDate(btn.getAttribute('data-iso')));
+      });
+      updateHighlight();
+    }
+
+    function monthHtml(year, month, side) {
       const first = new Date(year, month - 1, 1).getDay();
-      const days = new Date(year, month, 0).getDate();
-      grid.innerHTML = '';
-      for (let i = 0; i < first; i++) {
-        const blank = document.createElement('button');
-        blank.className = 'day-btn empty';
-        blank.disabled = true;
-        grid.appendChild(blank);
+      const daysIn = new Date(year, month, 0).getDate();
+      const prev = addMonth(year, month, -1);
+      const next = addMonth(year, month, 1);
+      const prevDays = new Date(prev.y, prev.m, 0).getDate();
+      let cells = '';
+      for (let i = 0; i < 42; i++) {
+        let y, m, d, outside = false;
+        if (i < first) {
+          y = prev.y; m = prev.m; d = prevDays - first + 1 + i; outside = true;
+        } else if (i - first + 1 > daysIn) {
+          y = next.y; m = next.m; d = i - first + 1 - daysIn; outside = true;
+        } else {
+          y = year; m = month; d = i - first + 1;
+        }
+        const date = iso(y, m, d);
+        const cls = ['day-btn', outside ? 'outside' : '', date === TODAY ? 'today' : ''].filter(Boolean).join(' ');
+        const aria = date === TODAY ? ('오늘 2026년 10월 13일') : String(d);
+        cells += '<button type="button" class="' + cls + '" data-iso="' + date + '" aria-label="' + aria + '">' + d + '</button>';
       }
-      for (let d = 1; d <= days; d++) {
-        const btn = document.createElement('button');
-        btn.className = 'day-btn';
-        btn.textContent = String(d);
-        btn.dataset.date = year + '-' + String(month).padStart(2,'0') + '-' + String(d).padStart(2,'0');
-        btn.addEventListener('click', () => pickDate(btn.dataset.date));
-        grid.appendChild(btn);
-      }
+      return '<div class="month-panel" id="' + side + '-panel">' +
+        '<div class="month-head">' +
+          '<button type="button" data-nav="-1" aria-label="이전 달">&lt;</button>' +
+          '<span>' + year + '년 ' + month + '월</span>' +
+          '<button type="button" data-nav="1" aria-label="다음 달">&gt;</button>' +
+        '</div>' +
+        '<div class="dow"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>' +
+        '<div class="month-grid">' + cells + '</div></div>';
     }
 
     function pickDate(isoDate) {
       if (!state.start || (state.start && state.end)) {
         state.start = isoDate;
         state.end = null;
+      } else if (isoDate >= state.start) {
+        state.end = isoDate;
       } else {
-        if (isoDate >= state.start) {
-          state.end = isoDate;
-        } else {
-          state.start = isoDate;
-          state.end = null;
-        }
+        state.start = isoDate;
+        state.end = null;
       }
       updateTrigger();
       updateHighlight();
@@ -109,9 +146,9 @@ const FIXTURE_HTML = `<!DOCTYPE html>
     }
 
     function updateHighlight() {
-      document.querySelectorAll('.day-btn').forEach(btn => {
+      document.querySelectorAll('.day-btn').forEach((btn) => {
         btn.classList.remove('selected', 'in-range');
-        const d = btn.dataset.date;
+        const d = btn.getAttribute('data-iso');
         if (!d) return;
         if (d === state.start || d === state.end) btn.classList.add('selected');
         else if (state.start && state.end && d > state.start && d < state.end) btn.classList.add('in-range');
@@ -124,10 +161,8 @@ const FIXTURE_HTML = `<!DOCTYPE html>
       const isOpen = cal.classList.contains('open');
       cal.classList.toggle('open', !isOpen);
       trig.setAttribute('aria-expanded', String(!isOpen));
+      if (!isOpen) render();
     });
-
-    renderMonth('oct-grid', 2026, 10, 0);
-    renderMonth('nov-grid', 2026, 11, 0);
   </script>
 </body>
 </html>`;
@@ -226,14 +261,7 @@ describe("applyCustomDateRange (두 달 캘린더 픽스처)", () => {
       await applyCustomDateRange(page, "기간 선택", "2026-10-01,2026-10-13");
 
       const text = await page.locator("#trigger").innerText();
-      assert.ok(
-        text.includes("10.01") || text.includes("10-01"),
-        `트리거에 시작일이 없음. 실제: "${text}"`,
-      );
-      assert.ok(
-        text.includes("10.13") || text.includes("10-13"),
-        `트리거에 종료일이 없음. 실제: "${text}"`,
-      );
+      assert.equal(text.replace(/\s+/g, " ").trim(), "2026.10.01 ~ 2026.10.13");
     } finally {
       await ctx.close();
       await browser.close();
@@ -257,17 +285,15 @@ describe("applyCustomDateRange (두 달 캘린더 픽스처)", () => {
     }
   });
 
-  it("범위가 설정되지 않으면 명확한 에러를 던진다", async () => {
-    // 픽스처에서 존재하지 않는 날짜(2026-12-01)를 선택하면 day 버튼을 못 찾아서 에러 발생
+  it("화면에 없는 먼 연도는 명확한 에러를 던진다", async () => {
     const browser = await chromium.launch({ headless: true });
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
     try {
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
       await assert.rejects(
-        () => applyCustomDateRange(page, "기간 선택", "2026-12-01,2026-12-31"),
+        () => applyCustomDateRange(page, "기간 선택", "2099-01-01,2099-01-31"),
         (err: Error) => {
-          // 12월이 픽스처에 없으므로 날짜 칸을 찾지 못해 에러
           assert.ok(err.message.length > 0, "에러 메시지가 있어야 한다");
           return true;
         },
@@ -276,6 +302,38 @@ describe("applyCustomDateRange (두 달 캘린더 픽스처)", () => {
       await ctx.close();
       await browser.close();
     }
+  });
+
+  it("다음 달로 이동해 12월 범위를 선택한다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      await applyCustomDateRange(page, "기간 선택", "2026-12-01,2026-12-15");
+      const text = await page.locator("#trigger").innerText();
+      assert.equal(text.replace(/\s+/g, " ").trim(), "2026.12.01 ~ 2026.12.15");
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("트리거에 시작일만 있으면 정확한 범위가 아니라서 실패한다", async () => {
+    assert.equal(
+      displayedRangeMatches("2026.10.13 ~", {
+        start: { year: 2026, month: 10, day: 1 },
+        end: { year: 2026, month: 10, day: 13 },
+      }),
+      false,
+    );
+    assert.equal(
+      displayedRangeMatches("2026.10.01 ~ 2026.10.13", {
+        start: { year: 2026, month: 10, day: 1 },
+        end: { year: 2026, month: 10, day: 13 },
+      }),
+      true,
+    );
   });
 
   it("hashed CSS 셀렉터를 trigger 로 사용하면 fallback 한다 (label-based)", async () => {

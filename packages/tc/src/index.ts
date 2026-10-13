@@ -23,6 +23,7 @@ export {
   type TestCase,
 } from "./build-test-cases.js";
 export { casesToMarkdown, casesToXlsx } from "./export-document.js";
+export { generatePlaywrightSpec, playwrightSpecFileName } from "./playwright-spec.js";
 export {
   TC_FILE_VERSION,
   saveTcFile,
