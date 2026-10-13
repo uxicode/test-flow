@@ -1,17 +1,32 @@
 import { CONTROL_KIND, type ControlKind } from "./control-kind.js";
 import type { LocatorStrategy, TestCase } from "./build-test-cases.js";
 
-const HASHED_CSS = /[._][a-z][a-zA-Z0-9]*_[a-z0-9]{3,}_[a-zA-Z0-9]{2,}/u;
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function escapeSingle(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-function isHashed(selector: string): boolean {
-  return HASHED_CSS.test(selector);
+/** 날짜 트리거를 찾을 때 러너와 spec 이 같이 쓰는 이름 목록. */
+export function dateTriggerNames(target: string): string[] {
+  const core = target.replace(/(필터|입력|조건|선택)\s*$/u, "").trim();
+  const labels = new Set<string>([target, core].filter(Boolean));
+  if (/검사\s*일|등록\s*일|조회\s*기간/u.test(target)) {
+    labels.add("등록일");
+    labels.add("검사일");
+    labels.add("조회 기간");
+  }
+  return [...labels];
 }
 
-function locatorExpr(selector: string, strategy: LocatorStrategy): string {
+export function dateTriggerNamePattern(target: string): string {
+  return dateTriggerNames(target).map(escapeRegex).join("|");
+}
+
+/** 전략 + 셀렉터 → Playwright 코드. 패널 스니펫·spec·러너가 같은 문자열을 쓴다. */
+export function playwrightLocatorExpr(strategy: LocatorStrategy, selector: string): string {
   switch (strategy) {
     case "testid":
     case "css":
@@ -35,31 +50,14 @@ function locatorExpr(selector: string, strategy: LocatorStrategy): string {
   }
 }
 
-function fieldLocator(target: string, selector: string | undefined, strategy: LocatorStrategy | undefined, control?: ControlKind): string {
-  const sel = selector?.trim();
-  const resolved: LocatorStrategy = strategy ?? "css";
-  if (sel && !(resolved === "css" && isHashed(sel))) {
-    return locatorExpr(sel, resolved);
-  }
-  if (control === CONTROL_KIND.date || control === CONTROL_KIND.dateRange) {
-    return `page.getByRole('button', { name: /${escapeSingle(target)}/ })`;
-  }
-  return `page.getByLabel('${escapeSingle(target)}')`;
+/** 사용자가 고른 날짜 셀렉터는 캘린더 컨테이너다. 받은 문자열 그대로 locator 에 넣는다. */
+export function dateCalendarScopeExpr(selector: string): string {
+  return playwrightLocatorExpr("css", selector);
 }
 
-function dateRangeSteps(varName: string, value: string): string[] {
-  const parts = value.split(/[~,]/u).map((part) => part.trim()).filter(Boolean);
-  const start = parts[0] ?? value;
-  const end = parts[1] ?? parts[0] ?? value;
-  const startIso = start.replace(/[./]/g, "-");
-  const endIso = end.replace(/[./]/g, "-");
-  return [
-    `  await ${varName}.click();`,
-    `  const dateDialog = page.getByRole('dialog');`,
-    `  await clickMonthDay(dateDialog, '${escapeSingle(startIso)}');`,
-    `  await clickMonthDay(dateDialog, '${escapeSingle(endIso)}');`,
-    `  await expect(${varName}).toHaveText(/${escapeSingle(startIso.replace(/-/g, "[.\\-/]"))}\\s*~\\s*${escapeSingle(endIso.replace(/-/g, "[.\\-/]"))}/);`,
-  ];
+export function dateTriggerLocatorExpr(target: string): string {
+  const pattern = dateTriggerNamePattern(target);
+  return `page.getByRole('button', { name: /${pattern}/ }).or(page.getByLabel(/${pattern}/))`;
 }
 
 function fillStep(control: ControlKind | undefined, loc: string, value: string): string[] {
@@ -107,9 +105,9 @@ export function generatePlaywrightSpec(
     ? options.startUrl
     : "https://example.com";
   const helper = [
-    `async function clickMonthDay(dialog: Locator, iso: string): Promise<void> {`,
+    `async function clickMonthDay(calendar: Locator, iso: string): Promise<void> {`,
     `  const [year, month, day] = iso.split('-').map(Number);`,
-    `  const clicked = await dialog.evaluate((root, payload) => {`,
+    `  const clicked = await calendar.evaluate((root, payload) => {`,
     `    const titleRe = new RegExp(payload.year + '\\\\s*년\\\\s*' + payload.month + '\\\\s*월');`,
     `    const panels = Array.from(root.querySelectorAll('div, section, table'));`,
     `    const panel = panels.find((el) => {`,
@@ -118,7 +116,7 @@ export function generatePlaywrightSpec(
     `      return titleRe.test(text) && headers.length === 1;`,
     `    });`,
     `    if (!panel) return false;`,
-    `    const exact = panel.querySelector('[data-date="' + payload.iso + '"], [title="' + payload.iso + '"]');`,
+    `    const exact = panel.querySelector('[data-date="' + payload.iso + '"], [data-iso="' + payload.iso + '"], [title="' + payload.iso + '"]');`,
     `    if (exact) { (exact as HTMLElement).click(); return true; }`,
     `    const buttons = Array.from(panel.querySelectorAll('button, [role="gridcell"]'));`,
     `    const target = buttons.find((btn, index) => {`,
@@ -148,21 +146,39 @@ export function generatePlaywrightSpec(
 
   testCase.inputs.forEach((input, index) => {
     const value = options.values?.[input.target] ?? input.value;
-    const loc = fieldLocator(input.target, input.selector, input.selectorStrategy, input.control);
     const varName = `field${index + 1}`;
-    const hashedNote =
-      input.selector && isHashed(input.selector)
-        ? `  // 저장된 셀렉터 ${input.selector} 는 CSS 모듈 해시라 트리거로 쓰지 않는다.`
-        : undefined;
     if (input.control === CONTROL_KIND.dateRange || input.control === CONTROL_KIND.date) {
-      if (hashedNote) lines.push(hashedNote);
+      const parts = value.split(/[~,]/u).map((part) => part.trim()).filter(Boolean);
+      const startIso = (parts[0] ?? value).replace(/[./]/g, "-");
+      const endIso = (parts[1] ?? parts[0] ?? value).replace(/[./]/g, "-");
+      const triggerExpr = dateTriggerLocatorExpr(input.target);
       lines.push(`  // [${input.control}] ${input.target} = ${value}`);
-      lines.push(`  const ${varName} = ${loc};`);
-      lines.push(...dateRangeSteps(varName, value));
+      lines.push(`  const ${varName} = ${triggerExpr};`);
+      lines.push(`  await ${varName}.click();`);
+      if (input.selector?.trim()) {
+        const calendarExpr = dateCalendarScopeExpr(input.selector.trim());
+        lines.push(`  const calendar${index + 1} = ${calendarExpr};`);
+        lines.push(`  await expect(calendar${index + 1}).toBeVisible();`);
+        lines.push(`  await clickMonthDay(calendar${index + 1}, '${escapeSingle(startIso)}');`);
+        if (input.control === CONTROL_KIND.dateRange) {
+          lines.push(`  await clickMonthDay(calendar${index + 1}, '${escapeSingle(endIso)}');`);
+        }
+      } else {
+        lines.push(`  const calendar${index + 1} = page.getByRole('dialog');`);
+        lines.push(`  await clickMonthDay(calendar${index + 1}, '${escapeSingle(startIso)}');`);
+        if (input.control === CONTROL_KIND.dateRange) {
+          lines.push(`  await clickMonthDay(calendar${index + 1}, '${escapeSingle(endIso)}');`);
+        }
+      }
+      lines.push(`  await expect(${varName}).toHaveText(/${escapeSingle(startIso.replace(/-/g, "[.\\-/]"))}\\s*~\\s*${escapeSingle(endIso.replace(/-/g, "[.\\-/]"))}/);`);
       lines.push(``);
       return;
     }
-    if (hashedNote) lines.push(hashedNote);
+
+    const strategy: LocatorStrategy = input.selectorStrategy ?? "css";
+    const loc = input.selector?.trim()
+      ? playwrightLocatorExpr(strategy, input.selector.trim())
+      : `page.getByLabel('${escapeSingle(input.target)}')`;
     lines.push(`  // [${input.control ?? "text"}] ${input.target} = ${value || "(비움)"}`);
     lines.push(...fillStep(input.control, loc, value));
     lines.push(``);

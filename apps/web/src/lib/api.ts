@@ -33,28 +33,7 @@ export function isHashedCssModuleClient(selector: string): boolean {
   return /[._][a-z][a-zA-Z0-9]*_[a-z0-9]{3,}_[a-zA-Z0-9]{2,}/u.test(selector);
 }
 
-/** 전략 + 셀렉터 → 읽기 쉬운 Playwright 코드 스니펫 */
-export function locatorCodeSnippet(strategy: LocatorStrategy, selector: string, _control?: string): string {
-  switch (strategy) {
-    case "testid":
-    case "css":
-      return `page.locator('${selector}')`;
-    case "label":
-      return `page.getByLabel('${selector}')`;
-    case "placeholder":
-      return `page.getByPlaceholder('${selector}')`;
-    case "nearby-text":
-      return `// 근처 텍스트 '${selector}' 기준\npage.locator('input, select, [role="combobox"]').filter({ hasText: '${selector}' })`;
-    case "role+name": {
-      const sep = selector.indexOf("|");
-      const role = sep >= 0 ? selector.slice(0, sep) : selector;
-      const name = sep >= 0 ? selector.slice(sep + 1) : "";
-      return `page.getByRole('${role}', { name: '${name}' })`;
-    }
-    default:
-      return `page.locator('${selector}')`;
-  }
-}
+export { playwrightLocatorExpr as locatorCodeSnippet } from "@testflow/tc/playwright-spec";
 
 export interface LocatorCandidate {
   strategy: LocatorStrategy;

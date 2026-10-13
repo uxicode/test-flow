@@ -12,13 +12,21 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import { chromium } from "playwright";
+import { CONTROL_KIND } from "@testflow/tc";
+import {
+  dateCalendarScopeExpr,
+  dateTriggerLocatorExpr,
+  generatePlaywrightSpec,
+  playwrightLocatorExpr,
+} from "@testflow/tc/playwright-spec";
 import {
   applyCustomDateRange,
+  CalendarScopeError,
   displayedRangeMatches,
   parseDateRangeValue,
   parseSingleDate,
 } from "./date-picker.js";
-import { isHashedCssModule } from "./apply-field.js";
+import { applyFieldValue, isHashedCssModule } from "./apply-field.js";
 
 // ---------------------------------------------------------------------------
 // 픽스처 HTML: 두 달 캘린더 범위 선택기
@@ -54,6 +62,8 @@ const FIXTURE_HTML = `<!DOCTYPE html>
   <label for="trigger">등록일</label>
   <button id="trigger" aria-expanded="false" aria-haspopup="dialog">기간 선택</button>
   <div id="calendar" class="calendar _root_du6a0_1 _calendar_o7hka_89" role="dialog"></div>
+  <button type="button" id="search">조회</button>
+  <p id="result" hidden>사용자 목록</p>
   <script>
     const TODAY = '2026-10-13';
     const state = { start: null, end: null, left: { y: 2026, m: 10 } };
@@ -162,6 +172,9 @@ const FIXTURE_HTML = `<!DOCTYPE html>
       cal.classList.toggle('open', !isOpen);
       trig.setAttribute('aria-expanded', String(!isOpen));
       if (!isOpen) render();
+    });
+    document.getElementById('search').addEventListener('click', () => {
+      document.getElementById('result').hidden = false;
     });
   </script>
 </body>
@@ -336,21 +349,150 @@ describe("applyCustomDateRange (두 달 캘린더 픽스처)", () => {
     );
   });
 
-  it("hashed CSS 셀렉터를 trigger 로 사용하면 fallback 한다 (label-based)", async () => {
+  it("고른 해시 셀렉터를 캘린더 컨테이너로 그대로 사용한다", async () => {
+    const picked = "._root_du6a0_1._calendar_o7hka_89";
     const browser = await chromium.launch({ headless: true });
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
     try {
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-      // 해시 클래스를 셀렉터로 넘기면 isHashedCssModule 감지 후 라벨 기반으로 fallback
-      await applyCustomDateRange(
-        page,
-        "기간 선택",
-        "2026-10-01,2026-10-05",
-        "._root_du6a0_1._calendar_fake_89", // 해시 클래스 → 감지 후 스킵
-      );
+      await applyCustomDateRange(page, "검사일 필터", "2026-10-01,2026-10-13", {
+        containerSelector: picked,
+      });
       const text = await page.locator("#trigger").innerText();
-      assert.ok(text.includes("10.01") || text.includes("10-01"), `시작일 없음: "${text}"`);
+      assert.equal(text.replace(/\s+/g, " ").trim(), "2026.10.01 ~ 2026.10.13");
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("고른 컨테이너가 없으면 셀렉터 이름을 넣은 에러를 던진다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      await assert.rejects(
+        () =>
+          applyCustomDateRange(page, "검사일 필터", "2026-10-01,2026-10-13", {
+            containerSelector: "._root_du6a0_1._calendar_fake_89",
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof CalendarScopeError);
+          assert.match(err.message, /\._root_du6a0_1\._calendar_fake_89/);
+          assert.match(err.message, /캘린더 컨테이너/);
+          return true;
+        },
+      );
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("생성 spec 과 러너가 같은 캘린더 locator 를 쓰고, spec locator 로 픽스처를 조작한다", async () => {
+    const picked = "._root_du6a0_1._calendar_o7hka_89";
+    const spec = generatePlaywrightSpec(
+      {
+        id: "tc-date",
+        screenName: "관리자 사용자 현황",
+        kind: "success",
+        title: "관리자 사용자 현황 · 검사일 필터",
+        inputs: [
+          {
+            target: "검사일 필터",
+            value: "2026-10-01,2026-10-13",
+            control: CONTROL_KIND.dateRange,
+            selector: picked,
+            selectorStrategy: "css",
+          },
+        ],
+        buttonName: "조회",
+        expectedText: "사용자 목록",
+      },
+      { startUrl: baseUrl },
+    );
+    const calendarExpr = dateCalendarScopeExpr(picked);
+    assert.equal(calendarExpr, "page.locator('._root_du6a0_1._calendar_o7hka_89')");
+    assert.equal(playwrightLocatorExpr("css", picked), calendarExpr);
+    assert.ok(spec.includes(calendarExpr), `spec 이 ${calendarExpr} 를 써야 한다\n${spec}`);
+    assert.ok(spec.includes(dateTriggerLocatorExpr("검사일 필터")));
+    assert.equal(spec.includes("트리거로 쓰지 않는다"), false);
+    assert.equal(spec.includes("getByRole('dialog')"), false);
+    assert.ok(spec.includes("[data-iso=\"' + payload.iso + '\"]") || spec.includes("data-iso="));
+
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+
+      const trigger = page
+        .getByRole("button", { name: /검사일 필터|검사일|등록일|조회 기간/ })
+        .or(page.getByLabel(/검사일 필터|검사일|등록일|조회 기간/));
+      await trigger.click();
+      const calendar = page.locator(picked);
+      assert.equal(await calendar.count(), 1, "고른 셀렉터가 캘린더를 찾아야 한다");
+      await calendar.waitFor({ state: "visible", timeout: 5000 });
+
+      const clickMonthDay = async (iso: string) => {
+        const [year, month, day] = iso.split("-").map(Number);
+        const clicked = await calendar.evaluate((root, payload) => {
+          const titleRe = new RegExp(payload.year + "\\s*년\\s*" + payload.month + "\\s*월");
+          const panels = Array.from(root.querySelectorAll("div, section, table"));
+          const panel = panels.find((el) => {
+            const text = el.textContent || "";
+            const headers = text.match(/\d{4}\s*년\s*\d{1,2}\s*월/g) || [];
+            return titleRe.test(text) && headers.length === 1;
+          });
+          if (!panel) return false;
+          const exact = panel.querySelector(
+            '[data-date="' + payload.iso + '"], [data-iso="' + payload.iso + '"], [title="' + payload.iso + '"]',
+          );
+          if (exact) {
+            (exact as HTMLElement).click();
+            return true;
+          }
+          return false;
+        }, { year, month, day, iso });
+        assert.equal(clicked, true, `${iso} 를 spec 로케이터로 눌러야 한다`);
+      };
+
+      await clickMonthDay("2026-10-01");
+      await clickMonthDay("2026-10-13");
+      assert.equal((await page.locator("#trigger").innerText()).replace(/\s+/g, " ").trim(), "2026.10.01 ~ 2026.10.13");
+      await page.getByRole("button", { name: "조회" }).click();
+      assert.equal(await page.getByText("사용자 목록").isVisible(), true);
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("applyFieldValue 는 고른 해시 셀렉터를 바꾸지 않고 캘린더 스코프로 쓴다", async () => {
+    const picked = "._root_du6a0_1._calendar_o7hka_89";
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    const logs: string[] = [];
+    try {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      await applyFieldValue(
+        page,
+        {
+          target: "검사일 필터",
+          value: "2026-10-01,2026-10-13",
+          control: CONTROL_KIND.dateRange,
+          selector: picked,
+          selectorStrategy: "css",
+        },
+        (message) => logs.push(message),
+        async () => ({ x: 0, y: 0 }),
+      );
+      assert.equal((await page.locator("#trigger").innerText()).replace(/\s+/g, " ").trim(), "2026.10.01 ~ 2026.10.13");
+      assert.ok(logs.some((line) => line.includes(picked)), `로그에 고른 셀렉터가 남아야 한다\n${logs.join("\n")}`);
+      assert.equal(logs.some((line) => line.includes("트리거로 쓰지 않는다")), false);
     } finally {
       await ctx.close();
       await browser.close();
