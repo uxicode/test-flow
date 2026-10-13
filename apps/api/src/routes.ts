@@ -19,7 +19,7 @@ import {
   listMatchSets,
   loadMatchSet,
   matchTcToMap,
-  resolveApprovedSelector,
+  resolveApprovedLocator,
   saveMatchSet,
   saveMatchSetById,
   type MatchSet,
@@ -454,8 +454,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const resolvedInputs = (inputsOverride ?? testCase.inputs).map((input) => {
       if (input.selector) return input; // 이미 셀렉터가 있으면 그대로 사용
       if (!approvedMatchSet) return input;
-      const sel = resolveApprovedSelector(approvedMatchSet, input.target);
-      return sel ? { ...input, selector: sel } : input;
+      const resolved = resolveApprovedLocator(approvedMatchSet, input.target);
+      return resolved
+        ? { ...input, selector: resolved.selector, selectorStrategy: resolved.selectorStrategy }
+        : input;
     });
 
     const mergedCase: TestCase = {

@@ -16,6 +16,7 @@ export {
   failureInputValue,
   isEmptyFieldWarning,
   TC_KIND,
+  type LocatorStrategy,
   type TcInput,
   type TcKind,
   type TcTableAssert,

@@ -22,13 +22,17 @@ export const TC_KIND = {
 
 export type TcKind = (typeof TC_KIND)[keyof typeof TC_KIND];
 
+export type LocatorStrategy = "testid" | "role+name" | "label" | "nearby-text" | "placeholder" | "css";
+
 export interface TcInput {
   target: string;
   value: string;
   control?: ControlKind;
   options?: string[];
-  /** 실행 시 이 CSS 셀렉터로 요소를 먼저 찾는다 (피커로 지정). */
+  /** 실행 시 이 값으로 요소를 먼저 찾는다 (피커로 지정하거나 매칭 결과에서 주입). */
   selector?: string;
+  /** selector 를 어떤 Playwright 메서드로 사용할지 (기본: css). */
+  selectorStrategy?: LocatorStrategy;
 }
 
 /** 조회 결과 표의 특정 열이 모든 행에서 조건을 만족하는지 검증한다. */

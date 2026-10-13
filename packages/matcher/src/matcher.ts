@@ -148,8 +148,16 @@ function isAmbiguous(candidates: MatchCandidate[]): boolean {
   return gap < 0.1;
 }
 
-/** 실행 시 매칭 결과에서 스텝 레이블에 해당하는 승인된 CSS 셀렉터를 찾는다. */
-export function resolveApprovedSelector(set: MatchSet, stepLabel: string): string | undefined {
+export type ResolvedLocator = {
+  selector: string;
+  selectorStrategy: import("@testflow/tc").LocatorStrategy;
+};
+
+/**
+ * 실행 시 매칭 결과에서 스텝 레이블에 해당하는 승인된 로케이터를 찾는다.
+ * selector + selectorStrategy 쌍으로 반환해 Playwright 메서드를 올바르게 선택한다.
+ */
+export function resolveApprovedLocator(set: MatchSet, stepLabel: string): ResolvedLocator | undefined {
   const step = set.steps.find((s) => s.stepLabel === stepLabel);
   if (!step) return undefined;
   if (step.status !== "matched" && step.status !== "approved") return undefined;
@@ -159,14 +167,26 @@ export function resolveApprovedSelector(set: MatchSet, stepLabel: string): strin
   if (!candidate) return undefined;
 
   const loc = candidate.bestLocator;
-  // CSS-compatible 전략만 selector 로 사용 가능
-  if (loc.strategy === "testid" || loc.strategy === "css") return loc.value;
-  if (loc.strategy === "nearby-text" || loc.strategy === "label" || loc.strategy === "placeholder") return undefined;
-  if (loc.strategy === "role+name") {
-    // [role="X"][aria-label="Y"] 형태로 변환 시도
-    const [role, name] = loc.value.split("|");
-    if (role && name) return `[role="${role}"][aria-label="${name}"]`;
+  switch (loc.strategy) {
+    case "testid":
+    case "css":
+      return { selector: loc.value, selectorStrategy: loc.strategy };
+    case "label":
+    case "placeholder":
+    case "nearby-text":
+      return { selector: loc.value, selectorStrategy: loc.strategy };
+    case "role+name":
+      return { selector: loc.value, selectorStrategy: "role+name" };
+    default: {
+      const _exhaustive: never = loc.strategy;
+      void _exhaustive;
+      return undefined;
+    }
   }
-  return undefined;
+}
+
+/** @deprecated 단순 CSS 셀렉터만 반환하는 이전 방식. resolveApprovedLocator 를 사용하세요. */
+export function resolveApprovedSelector(set: MatchSet, stepLabel: string): string | undefined {
+  return resolveApprovedLocator(set, stepLabel)?.selector;
 }
 

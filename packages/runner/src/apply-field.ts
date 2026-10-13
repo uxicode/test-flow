@@ -1,6 +1,17 @@
-import { CONTROL_KIND, type ControlKind, type TcInput } from "@testflow/tc";
+import { CONTROL_KIND, type ControlKind, type LocatorStrategy, type TcInput } from "@testflow/tc";
 import type { Locator, Page } from "playwright";
 import { applyCustomDateRange, parseDateRangeValue } from "./date-picker.js";
+
+/**
+ * CSS 모듈 해시 클래스 감지 패턴.
+ * 예: `._root_du6a0_1` `._calendar_o7hka_89`
+ * 이런 클래스는 빌드마다 바뀌므로 취약한 셀렉터다.
+ */
+export const HASHED_CSS_MODULE_PATTERN = /[._][a-z][a-zA-Z0-9]*_[a-z0-9]{3,}_[a-zA-Z0-9]{2,}/u;
+
+export function isHashedCssModule(selector: string): boolean {
+  return HASHED_CSS_MODULE_PATTERN.test(selector);
+}
 
 function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -222,12 +233,56 @@ async function applyCheckbox(page: Page, target: string, value: string): Promise
   return box;
 }
 
-async function visibleStoredSelector(page: Page, selector: string): Promise<Locator | null> {
-  const trimmed = selector.trim();
-  if (!trimmed) return null;
-  const loc = page.locator(trimmed).first();
-  if (await loc.isVisible().catch(() => false)) return loc;
-  return null;
+
+/**
+ * selectorStrategy 에 따라 적절한 Playwright Locator 를 반환한다.
+ * CSS 전략은 page.locator(), label 전략은 page.getByLabel() 등을 사용한다.
+ */
+async function resolveLocatorByStrategy(
+  page: Page,
+  selector: string,
+  strategy: LocatorStrategy,
+  _target: string,
+): Promise<Locator | null> {
+  try {
+    let loc: Locator;
+    switch (strategy) {
+      case "testid":
+      case "css":
+        loc = page.locator(selector).first();
+        break;
+      case "label":
+        loc = page.getByLabel(selector).first();
+        break;
+      case "placeholder":
+        loc = page.getByPlaceholder(selector).first();
+        break;
+      case "nearby-text":
+        // 근처 텍스트: 해당 텍스트를 포함하는 부모 안의 첫 번째 대화형 요소
+        loc = page
+          .locator(`input, select, textarea, [role="combobox"]`)
+          .filter({ has: page.locator(`..`, { hasText: selector }) })
+          .first();
+        break;
+      case "role+name": {
+        const sep = selector.indexOf("|");
+        if (sep < 0) return null;
+        const role = selector.slice(0, sep) as Parameters<Page["getByRole"]>[0];
+        const name = selector.slice(sep + 1);
+        loc = page.getByRole(role, { name }).first();
+        break;
+      }
+      default: {
+        const _exhaustive: never = strategy;
+        void _exhaustive;
+        return null;
+      }
+    }
+    if (await loc.isVisible().catch(() => false)) return loc;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 async function applyUsingSelectorHint(
@@ -238,16 +293,32 @@ async function applyUsingSelectorHint(
 ): Promise<Locator | null> {
   const sel = input.selector?.trim();
   if (!sel) return null;
-  const el = await visibleStoredSelector(page, sel);
-  if (!el) return null;
+
+  const strategy: LocatorStrategy = input.selectorStrategy ?? "css";
+
+  // date/dateRange: 셀렉터를 트리거 선택자로 사용
   const control: ControlKind = input.control ?? CONTROL_KIND.text;
+  if (control === CONTROL_KIND.dateRange || control === CONTROL_KIND.date) {
+    // hashed CSS module 경고: applyCustomDateRange 가 이 selector 를 트리거로 사용하므로
+    // CSS 전략이면서 해시 클래스면 label-based fallback 을 시도한다
+    if (strategy === "css" && isHashedCssModule(sel)) {
+      return null; // 해시 클래스를 날짜 트리거로 쓰지 않는다
+    }
+    return applyCustomDateRange(page, input.target, value, sel);
+  }
+
+  // combobox/select: trigger selector 로 사용
+  if (control === CONTROL_KIND.combobox || control === CONTROL_KIND.select) {
+    const el = await resolveLocatorByStrategy(page, sel, strategy, input.target);
+    if (!el) return null;
+    return interactCombobox(page, el, input.target, value, containerSelector);
+  }
+
+  // 일반 요소: 전략별로 Locator 를 해석
+  const el = await resolveLocatorByStrategy(page, sel, strategy, input.target);
+  if (!el) return null;
+
   switch (control) {
-    case CONTROL_KIND.combobox:
-    case CONTROL_KIND.select:
-      return interactCombobox(page, el, input.target, value, containerSelector);
-    case CONTROL_KIND.dateRange:
-    case CONTROL_KIND.date:
-      return applyCustomDateRange(page, input.target, value, sel);
     case CONTROL_KIND.text:
     case CONTROL_KIND.password:
     case CONTROL_KIND.textarea:
@@ -262,7 +333,8 @@ async function applyUsingSelectorHint(
       return el;
     default: {
       const _exhaustive: never = control;
-      return _exhaustive;
+      void _exhaustive;
+      return null;
     }
   }
 }
@@ -551,9 +623,14 @@ export async function applyFieldValue(
   const triggerSelector = input.selector?.trim();
   let locator: Locator;
 
+  const sel = input.selector?.trim();
+  if (sel && isHashedCssModule(sel) && (input.selectorStrategy ?? "css") === "css") {
+    log(`⚠ ${input.target}: 셀렉터가 CSS 모듈 해시 클래스(${sel.slice(0, 40)}…)입니다. 빌드마다 바뀌어 취약합니다.`);
+  }
+
   const hinted = await applyUsingSelectorHint(page, input, value, containerSelector).catch(() => null);
   if (hinted) {
-    log(`${input.target} · 저장된 셀렉터(${input.selector})로 조작`);
+    log(`${input.target} · 셀렉터(${input.selectorStrategy ?? "css"}: ${sel})로 조작`);
     await pointAt(hinted);
     return;
   }
