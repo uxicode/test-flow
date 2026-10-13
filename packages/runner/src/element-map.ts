@@ -6,7 +6,7 @@ import type { ControlKind } from "@testflow/tc";
 export const ELEMENT_MAP_VERSION = 1;
 
 /** 로케이터 전략 우선 순위 (높은 쪽이 앞에 온다) */
-export type LocatorStrategy = "testid" | "role+name" | "label" | "placeholder" | "css";
+export type LocatorStrategy = "testid" | "role+name" | "label" | "nearby-text" | "placeholder" | "css";
 
 /**
  * 하나의 로케이터 후보.

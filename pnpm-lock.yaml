@@ -22,6 +22,9 @@ importers:
       '@testflow/figma':
         specifier: workspace:*
         version: link:../../packages/figma
+      '@testflow/matcher':
+        specifier: workspace:*
+        version: link:../../packages/matcher
       '@testflow/runner':
         specifier: workspace:*
         version: link:../../packages/runner
@@ -96,6 +99,28 @@ importers:
         version: 5.9.3
 
   packages/figma:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.4
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.15
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/matcher:
+    dependencies:
+      '@testflow/analyze':
+        specifier: workspace:*
+        version: link:../analyze
+      '@testflow/runner':
+        specifier: workspace:*
+        version: link:../runner
+      '@testflow/tc':
+        specifier: workspace:*
+        version: link:../tc
     devDependencies:
       '@types/node':
         specifier: ^22.10.0
