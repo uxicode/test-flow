@@ -49,8 +49,9 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
   function isVisible(el) {
     var rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return false;
-    if (rect.bottom < 0 || rect.top > window.innerHeight) return false;
-    if (rect.right < 0 || rect.left > window.innerWidth) return false;
+    // 뷰포트 오른쪽·아래로 넘친 요소는 스크롤하면 조작할 수 있으니 남긴다.
+    // 왼쪽·위로 밀어 둔 요소(left:-9999px 같은 숨김 기법)만 버린다.
+    if (rect.bottom + window.scrollY < 0 || rect.right + window.scrollX < 0) return false;
     try {
       var style = window.getComputedStyle(el);
       if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") return false;
@@ -70,19 +71,56 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
 
   function getNearbyText(el) {
     var maxLen = 40;
-    var prev = el.previousElementSibling;
-    if (prev && ["input", "select", "textarea", "button"].indexOf(prev.tagName.toLowerCase()) < 0) {
-      var prevText = prev.textContent ? prev.textContent.trim() : "";
-      if (prevText.length >= 1 && prevText.length <= maxLen) return prevText;
-    }
-    var parent = el.parentElement;
-    if (parent) {
-      var clone = parent.cloneNode(true);
-      clone.querySelectorAll("input,select,textarea,button").forEach(function (child) { child.remove(); });
-      var parentText = clone.textContent ? clone.textContent.trim() : "";
-      if (parentText.length >= 1 && parentText.length <= maxLen) return parentText;
+    // 필터 라벨이 트리거를 감싼 래퍼 바깥에 있는 경우가 많아 조상 몇 단계까지 올라가 본다.
+    var cur = el;
+    for (var depth = 0; depth < 3 && cur && cur !== document.body; depth += 1) {
+      var prev = cur.previousElementSibling;
+      if (prev && ["input", "select", "textarea", "button"].indexOf(prev.tagName.toLowerCase()) < 0) {
+        var prevText = prev.textContent ? prev.textContent.trim() : "";
+        if (prevText.length >= 1 && prevText.length <= maxLen) return prevText;
+      }
+      var parent = cur.parentElement;
+      if (parent && parent !== document.body) {
+        var clone = parent.cloneNode(true);
+        clone.querySelectorAll("input,select,textarea,button").forEach(function (child) { child.remove(); });
+        var parentText = clone.textContent ? clone.textContent.trim() : "";
+        if (parentText.length >= 1 && parentText.length <= maxLen) return parentText;
+      }
+      cur = parent;
     }
     return null;
+  }
+
+  var DATE_TEXT = /\\d{4}[.\\-\\/]\\d{1,2}[.\\-\\/]\\d{1,2}/;
+
+  function buttonText(el) {
+    return (el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim();
+  }
+
+  var ACTION_TEXT = /^(조회|검색|초기화|리셋|등록|저장|삭제|취소|확인|닫기|적용|추가|수정|편집|다운로드|엑셀|내보내기|업로드|로그아웃|이전|다음|처음|마지막|search|reset|submit|save|delete|cancel|close|apply|add|edit|prev|next)/i;
+
+  /** 팝업(드롭다운·달력)을 여는 버튼인지. 조회·초기화 같은 일반 버튼은 제외한다. */
+  function isPopupTrigger(el) {
+    if (el.closest("nav, aside, header")) return false;
+    var popup = el.getAttribute("aria-haspopup");
+    if (popup && popup !== "false") return true;
+    if (el.hasAttribute("aria-expanded")) return true;
+    var text = buttonText(el);
+    if (DATE_TEXT.test(text)) return true;
+    return isLabeledFieldButton(el, text);
+  }
+
+  /**
+   * ARIA 표시가 없는 디자인 드롭다운: 라벨(성별 등) 옆에 놓인, 값을 보여 주는 버튼.
+   * 러너도 "라벨 그룹 안의 버튼"으로 같은 트리거를 찾는다.
+   */
+  function isLabeledFieldButton(el, text) {
+    var type = (el.getAttribute("type") || "").toLowerCase();
+    if (type === "submit" || type === "reset") return false;
+    if (!text || text.length > 30 || /^\\d+$/.test(text) || ACTION_TEXT.test(text)) return false;
+    if (el.closest('table, [role="grid"], [role="row"], [role="tablist"], [role="dialog"], [aria-label*="pagination" i], .pagination')) return false;
+    var nearby = getNearbyText(el);
+    return Boolean(nearby && nearby !== text);
   }
 
   function computeCssPath(el) {
@@ -133,7 +171,9 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
     '[role="radio"]:not(input)',
     '[role="checkbox"]:not(input)',
     '[aria-haspopup="listbox"]:not(select):not(input)',
-    '[aria-haspopup="menu"]:not(select):not(input)'
+    '[aria-haspopup="menu"]:not(select):not(input)',
+    'button',
+    '[role="button"]'
   ];
   var allEls = new Set();
   selectors.forEach(function (sel) {
@@ -146,8 +186,11 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
 
   allEls.forEach(function (el) {
     if (seen.has(el) || !isVisible(el)) return;
-    seen.add(el);
     var tag = el.tagName.toLowerCase();
+    var isButton = tag === "button" || el.getAttribute("role") === "button";
+    if (isButton && !isPopupTrigger(el)) return;
+    seen.add(el);
+    var text = isButton ? buttonText(el) : "";
     var rect = el.getBoundingClientRect();
     var nativeOptions = tag === "select"
       ? Array.prototype.map.call(el.options, function (option) { return option.text.trim(); }).filter(Boolean)
@@ -159,8 +202,11 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
       || (domId && document.querySelector('label[for="' + domId + '"]'))
       || el.getAttribute("aria-labelledby"),
     );
+    // 버튼 글자는 현재 값(전체, 2026.10.01 ~ …)이라 라벨로 쓰지 않고 근처 텍스트를 먼저 쓴다.
+    var nearbyText = hasForwardLabel ? null : getNearbyText(el);
+    var label = isButton && !hasForwardLabel && nearbyText ? nearbyText : getAccessibleName(el);
     results.push({
-      label: getAccessibleName(el),
+      label: label,
       rawTag: tag,
       rawType: el.getAttribute("type"),
       rawRole: el.getAttribute("role"),
@@ -172,7 +218,12 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
       domId: domId,
       cssPath: computeCssPath(el),
       nativeOptions: nativeOptions,
-      nearbyText: hasForwardLabel ? null : getNearbyText(el),
+      nearbyText: nearbyText,
+      popupTrigger: isButton,
+      dateText: isButton ? DATE_TEXT.test(text) : false,
+      dateRangeText: isButton && DATE_TEXT.test(text)
+        ? (text.match(new RegExp(DATE_TEXT.source, "g")) || []).length >= 2 || /~/.test(text)
+        : false,
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
     });
   });

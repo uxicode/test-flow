@@ -147,10 +147,28 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
   return payload;
 }
 
+export async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = (await response.json()) as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || "요청에 실패했습니다.");
+  return payload;
+}
+
 export async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path);
   const payload = (await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(payload.error || "요청에 실패했습니다.");
+  return payload;
+}
+
+export async function deleteJson<T>(path: string): Promise<T> {
+  const response = await fetch(path, { method: "DELETE" });
+  const payload = (await response.json()) as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || "삭제에 실패했습니다.");
   return payload;
 }
 

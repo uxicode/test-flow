@@ -28,6 +28,12 @@ interface RawElement {
   nativeOptions: string[];
   /** 폼 연결이 없지만 요소 근처에 보이는 텍스트 (preceding sibling / 부모 텍스트) */
   nearbyText: string | null;
+  /** 드롭다운·달력을 여는 버튼 (aria-haspopup / aria-expanded / 날짜 글자) */
+  popupTrigger: boolean;
+  /** 버튼 글자에 날짜가 보인다 */
+  dateText: boolean;
+  /** 버튼 글자에 날짜 범위(두 날짜 또는 ~)가 보인다 */
+  dateRangeText: boolean;
   rect: { x: number; y: number; width: number; height: number };
 }
 
@@ -46,6 +52,11 @@ function classifyControlKind(raw: RawElement): ControlKind {
     if (t === "file") return CONTROL_KIND.file;
     if (t === "date" || t === "datetime-local" || t === "month" || t === "week") return CONTROL_KIND.date;
     return CONTROL_KIND.text;
+  }
+  if (raw.popupTrigger) {
+    if (raw.dateRangeText) return CONTROL_KIND.dateRange;
+    if (raw.dateText || raw.ariaHaspopup === "dialog") return CONTROL_KIND.date;
+    return CONTROL_KIND.combobox;
   }
   if (raw.rawRole === "combobox" || raw.ariaHaspopup === "listbox" || raw.ariaHaspopup === "menu") {
     return CONTROL_KIND.combobox;
@@ -68,19 +79,21 @@ function buildLocatorCandidates(raw: RawElement): LocatorCandidate[] {
   }
 
   // 2. role + accessible name
+  // 팝업 버튼의 접근 가능 이름은 현재 값(글자)이 바뀌면 같이 바뀌므로 aria-label 이 있을 때만 쓴다.
   const role = roleForLocator(raw);
-  const name = raw.ariaLabel || raw.label;
+  const name = raw.popupTrigger ? raw.ariaLabel : raw.ariaLabel || raw.label;
   if (role && name) {
     candidates.push({ strategy: "role+name", value: `${role}|${name}` });
   }
 
   // 3. label text (연결된 <label>)
-  if (raw.label && !raw.ariaLabel) {
+  if (raw.label && !raw.ariaLabel && !raw.popupTrigger) {
     candidates.push({ strategy: "label", value: raw.label });
   }
 
   // 4. nearby text (비연결 근접 텍스트 — label보다 신뢰도 낮음)
-  if (raw.nearbyText && raw.nearbyText !== raw.label) {
+  // 러너의 nearby-text 해석은 입력 요소만 찾으므로 팝업 버튼에는 넣지 않는다.
+  if (raw.nearbyText && raw.nearbyText !== raw.label && !raw.popupTrigger) {
     candidates.push({ strategy: "nearby-text", value: raw.nearbyText });
   }
 
@@ -99,6 +112,7 @@ function buildLocatorCandidates(raw: RawElement): LocatorCandidate[] {
 
 function roleForLocator(raw: RawElement): string | null {
   if (raw.rawRole) return raw.rawRole;
+  if (raw.rawTag === "button") return "button";
   if (raw.rawTag === "input") {
     const t = (raw.rawType ?? "text").toLowerCase();
     if (t === "checkbox") return "checkbox";
@@ -117,18 +131,36 @@ function roleForLocator(raw: RawElement): string | null {
 // 드롭다운 옵션 컨테이너 감지
 // ---------------------------------------------------------------------------
 
+interface DropdownProbe {
+  container: "inline" | "portal" | "listbox" | null;
+  options: string[];
+}
+
+/** 펼쳐진 목록의 선택지 글자를 읽는다. 라벨이 현재 값(전체 등)으로 잡혀도 선택지로 매칭할 수 있게 한다. */
+async function readOpenOptions(page: Page): Promise<string[]> {
+  const texts = await page
+    .locator('[role="listbox"] [role="option"], [role="menu"] [role="menuitem"]')
+    .evaluateAll((nodes) =>
+      nodes
+        .filter((node) => node.getClientRects().length > 0)
+        .map((node) => ((node as HTMLElement).innerText || node.textContent || "").replace(/\s+/g, " ").trim()),
+    )
+    .catch(() => [] as string[]);
+  return [...new Set(texts.filter(Boolean))].slice(0, 30);
+}
+
 async function detectDropdownContainer(
   page: Page,
   entry: ElementEntry,
   locators: LocatorCandidate[],
-): Promise<"inline" | "portal" | "listbox" | null> {
+): Promise<DropdownProbe> {
   const control = entry.controlKind;
-  if (control === CONTROL_KIND.select) return "listbox";
-  if (control !== CONTROL_KIND.combobox) return null;
+  if (control === CONTROL_KIND.select) return { container: "listbox", options: entry.options ?? [] };
+  if (control !== CONTROL_KIND.combobox) return { container: null, options: [] };
 
   // combobox 트리거를 찾아서 클릭해 본다
   const trigger = await findTriggerLocator(page, locators);
-  if (!trigger) return null;
+  if (!trigger) return { container: null, options: [] };
 
   try {
     const portalsBefore = await page.locator('[data-floating-ui-portal], [data-radix-popper-content-wrapper]').count();
@@ -139,12 +171,13 @@ async function detectDropdownContainer(
 
     const portalsAfter = await page.locator('[data-floating-ui-portal], [data-radix-popper-content-wrapper]').count();
     const listboxesAfter = await page.locator('[role="listbox"], [role="menu"]').count();
+    const options = await readOpenOptions(page);
 
     // portal 레이어 새로 생겼으면 portal
     if (portalsAfter > portalsBefore) {
       await page.keyboard.press("Escape").catch(() => undefined);
       await page.waitForTimeout(200);
-      return "portal";
+      return { container: "portal", options };
     }
 
     // listbox/menu role 요소가 새로 생겼으면 — 위치로 판단
@@ -165,14 +198,14 @@ async function detectDropdownContainer(
         .catch(() => null);
       await page.keyboard.press("Escape").catch(() => undefined);
       await page.waitForTimeout(200);
-      return container as "inline" | "portal" | null;
+      return { container: container as "inline" | "portal" | null, options };
     }
 
     await page.keyboard.press("Escape").catch(() => undefined);
-    return null;
+    return { container: null, options };
   } catch {
     await page.keyboard.press("Escape").catch(() => undefined);
-    return null;
+    return { container: null, options: [] };
   }
 }
 
@@ -269,15 +302,18 @@ export async function exploreScreen(page: Page, options: ExploreOptions): Promis
 
   // 페이지가 안정화될 때까지 대기
   await page.locator("body").waitFor({ state: "visible", timeout: 15_000 });
+  // SPA는 domcontentloaded 뒤에 화면을 그리므로 데이터 요청이 끝날 때까지 기다린다.
+  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
   await page
-    .locator("input, button, select, [role='combobox']")
+    .locator("input, select, textarea, [role='combobox']")
     .first()
-    .waitFor({ state: "visible", timeout: 5_000 })
+    .waitFor({ state: "visible", timeout: 15_000 })
     .catch(() => undefined);
   await page.waitForTimeout(500);
 
   const screenTitle = await page.title().catch(() => "");
   log(`화면 제목: ${screenTitle || "(없음)"}`);
+  log(`현재 주소: ${page.url()}`);
 
   // DOM에서 대화형 요소 수집
   log("대화형 요소 수집 중...");
@@ -294,6 +330,7 @@ export async function exploreScreen(page: Page, options: ExploreOptions): Promis
       controlKind,
       locators,
       dropdownOptionContainer: null,
+      ...(raw.nativeOptions.length > 0 ? { options: raw.nativeOptions } : {}),
     });
   }
 
@@ -305,7 +342,9 @@ export async function exploreScreen(page: Page, options: ExploreOptions): Promis
     if (dropdowns.length > 0) {
       log(`드롭다운 ${dropdowns.length}개 감지 중...`);
       for (const entry of dropdowns) {
-        entry.dropdownOptionContainer = await detectDropdownContainer(page, entry, entry.locators);
+        const probe = await detectDropdownContainer(page, entry, entry.locators);
+        entry.dropdownOptionContainer = probe.container;
+        if (probe.options.length > 0) entry.options = probe.options;
       }
     }
   }

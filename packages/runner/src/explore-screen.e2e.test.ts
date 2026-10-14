@@ -44,7 +44,24 @@ const FIXTURE_HTML = `<!DOCTYPE html>
       <label for="agree">동의</label>
       <input id="agree" type="checkbox">
     </div>
+    <div class="filter">
+      <span>성별 필터</span>
+      <div class="select-wrap"><button type="button" aria-expanded="false" id="gender-trigger">전체</button></div>
+    </div>
+    <div class="filter">
+      <span>검사일</span>
+      <div class="picker-wrap"><button type="button" aria-haspopup="dialog">2026.10.01 ~ 2026.10.14</button></div>
+    </div>
+    <div class="filter">
+      <span>회원 구분</span>
+      <div class="select-wrap"><button type="button" class="select-trigger">전체<svg width="8" height="8"></svg></button></div>
+    </div>
+    <div class="filter">
+      <span>검색 조건</span>
+      <button type="button">조회</button>
+    </div>
     <button type="submit">조회</button>
+    <button type="reset">초기화</button>
   </form>
 </body>
 </html>`;
@@ -93,6 +110,94 @@ describe("exploreScreen", () => {
       assert.ok(findByKind(CONTROL_KIND.radio).length >= 2, "radio 타입 요소가 2개 이상이어야 한다");
       // checkbox
       assert.ok(findByKind(CONTROL_KIND.checkbox).length >= 1, "checkbox 타입 요소가 있어야 한다");
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("팝업을 여는 커스텀 필터 버튼은 근처 라벨로 수집하고, 일반 버튼은 수집하지 않는다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      const map = await exploreScreen(page, { url: baseUrl, detectDropdowns: false, observeApis: false });
+
+      const gender = map.elements.find((e) => e.label === "성별 필터");
+      assert.ok(gender, "성별 필터 버튼이 있어야 한다");
+      assert.equal(gender.controlKind, CONTROL_KIND.combobox);
+      assert.deepEqual(gender.locators, [{ strategy: "css", value: "#gender-trigger" }]);
+
+      const examDate = map.elements.find((e) => e.label === "검사일");
+      assert.ok(examDate, "검사일 버튼이 있어야 한다");
+      assert.equal(examDate.controlKind, CONTROL_KIND.dateRange);
+
+      const status = map.elements.find((e) => e.label === "회원 구분");
+      assert.ok(status, "ARIA 표시가 없는 디자인 드롭다운도 라벨 옆 버튼이면 수집한다");
+      assert.equal(status.controlKind, CONTROL_KIND.combobox);
+
+      const labels = map.elements.map((e) => e.label);
+      assert.ok(!labels.includes("검색 조건"), "라벨 옆이라도 조회 같은 동작 버튼은 수집하지 않는다");
+      assert.ok(!labels.includes("조회"), "조회 버튼은 수집하지 않는다");
+      assert.ok(!labels.includes("초기화"), "초기화 버튼은 수집하지 않는다");
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("뷰포트 오른쪽 바깥에 놓인 필터도 수집한다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const page = await ctx.newPage();
+    try {
+      await page.setContent(`<!DOCTYPE html><html lang="ko"><body>
+        <div style="display:flex; gap:24px; min-width:1900px">
+          <div><label for="q">검색 조건</label><input id="q" placeholder="이름, 등록번호"></div>
+          <div style="margin-left:auto; display:flex; gap:8px; align-items:center">
+            <span>성별</span>
+            <div><button type="button" id="select-gender" aria-haspopup="listbox" aria-expanded="false">전체</button></div>
+          </div>
+        </div>
+        <span style="position:absolute; left:-9999px"><input aria-label="숨김 입력"></span>
+      </body></html>`);
+      const map = await exploreScreen(page, { url: "about:blank", detectDropdowns: false, observeApis: false });
+
+      const gender = map.elements.find((e) => e.label === "성별");
+      assert.ok(gender, `성별 필터가 있어야 한다. 실제: ${map.elements.map((e) => e.label).join(", ")}`);
+      assert.equal(gender.controlKind, CONTROL_KIND.combobox);
+      assert.ok(!map.elements.some((e) => e.label === "숨김 입력"), "화면 왼쪽 밖으로 숨긴 요소는 수집하지 않는다");
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("디자인 드롭다운을 열어 선택지 글자를 함께 저장한다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.setContent(`<!DOCTYPE html><html lang="ko"><body>
+        <div><span>성별</span><div><button type="button" id="select-g" aria-haspopup="listbox" aria-expanded="false">전체</button></div></div>
+        <script>
+          document.getElementById("select-g").addEventListener("click", () => {
+            const shell = document.createElement("div");
+            shell.setAttribute("data-floating-ui-portal", "");
+            shell.innerHTML = '<div style="position:fixed;top:40px;left:0"><ul role="listbox">'
+              + ["전체", "남성", "여성"].map((t) => '<li role="presentation"><button role="option" type="button"><span>' + t + '</span></button></li>').join("")
+              + "</ul></div>";
+            document.body.appendChild(shell);
+            document.addEventListener("keydown", (e) => { if (e.key === "Escape") shell.remove(); }, { once: true });
+          });
+        </script>
+      </body></html>`);
+      const map = await exploreScreen(page, { url: "about:blank", detectDropdowns: true, observeApis: false });
+      const gender = map.elements.find((e) => e.locators.some((l) => l.value === "#select-g"));
+      assert.ok(gender, "성별 드롭다운이 있어야 한다");
+      assert.equal(gender.dropdownOptionContainer, "portal");
+      assert.deepEqual(gender.options, ["전체", "남성", "여성"]);
     } finally {
       await ctx.close();
       await browser.close();

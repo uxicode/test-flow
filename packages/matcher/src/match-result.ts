@@ -37,6 +37,10 @@ export interface TcStepMatch {
   chosenIndex: number;
   status: MatchStatus;
   reviewNote?: string;
+  /** 자동 매칭 직후의 선택. 검토 리셋 때 되돌린다. (이전 버전 파일에는 없다) */
+  initialChosenIndex?: number;
+  /** 자동 매칭 직후의 상태 */
+  initialStatus?: MatchStatus;
 }
 
 /** 한 번의 매칭 세션 결과 */

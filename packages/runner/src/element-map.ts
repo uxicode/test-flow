@@ -36,6 +36,8 @@ export interface ElementEntry {
    * - null   : 해당 없음 또는 감지 불가
    */
   dropdownOptionContainer: "inline" | "portal" | "listbox" | null;
+  /** 드롭다운 선택지 글자 (네이티브 select 의 option, 디자인 드롭다운을 열었을 때 보인 option) */
+  options?: string[];
   /** 셀렉터 피커로 직접 고른 CSS 셀렉터 (가장 높은 우선순위로 사용) */
   pinnedSelector?: string;
 }

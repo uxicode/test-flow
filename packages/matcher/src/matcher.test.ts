@@ -10,13 +10,14 @@ import { ruleMatchStep } from "./rule-match.js";
 import { _parseModelResponseForTest } from "./model-match.js";
 import {
   MATCH_VERSION,
+  applyReview,
   deleteMatchSet,
   listMatchSets,
   loadMatchSet,
   saveMatchSet,
   type MatchSet,
 } from "./match-result.js";
-import { matchTcToMap, resolveApprovedSelector } from "./matcher.js";
+import { matchTcToMap, resetMatchReview, resolveApprovedSelector } from "./matcher.js";
 
 // ---------------------------------------------------------------------------
 // 테스트 픽스처
@@ -133,6 +134,11 @@ describe("controlKindsCompatible", () => {
     assert.equal(controlKindsCompatible(CONTROL_KIND.text, CONTROL_KIND.password), true);
   });
 
+  it("date ↔ date_range 는 호환된다", () => {
+    assert.equal(controlKindsCompatible(CONTROL_KIND.date, CONTROL_KIND.dateRange), true);
+    assert.equal(controlKindsCompatible(CONTROL_KIND.dateRange, CONTROL_KIND.date), true);
+  });
+
   it("select ↔ radio 는 호환되지 않는다", () => {
     assert.equal(controlKindsCompatible(CONTROL_KIND.select, CONTROL_KIND.radio), false);
   });
@@ -183,6 +189,37 @@ describe("ruleMatchStep", () => {
   it("매칭이 없으면 빈 배열을 반환한다", () => {
     const hits = ruleMatchStep("존재하지않는필드", undefined, SAMPLE_ELEMENTS, "test-map");
     assert.equal(hits.length, 0);
+  });
+
+  it("라벨이 현재 값(전체)으로 잡힌 디자인 드롭다운도 선택지로 매칭한다", () => {
+    const elements: ElementEntry[] = [
+      {
+        label: "전체",
+        controlKind: CONTROL_KIND.combobox,
+        locators: [{ strategy: "css", value: "#select-_r_4_" }],
+        dropdownOptionContainer: "portal",
+        options: ["전체", "남성", "여성"],
+      },
+      {
+        label: "10개씩 보기",
+        controlKind: CONTROL_KIND.combobox,
+        locators: [{ strategy: "css", value: "#select-_r_6_" }],
+        dropdownOptionContainer: "portal",
+        options: ["10개씩 보기", "20개씩 보기", "50개씩 보기"],
+      },
+    ];
+    const hits = ruleMatchStep("성별 필터", CONTROL_KIND.select, elements, "test-map", ["전체", "남성", "여성"]);
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0]?.bestLocator.value, "#select-_r_4_");
+    assert.ok(hits[0]!.confidence >= 0.8, `자동 매칭 임계값 이상이어야 한다. 실제: ${hits[0]?.confidence}`);
+  });
+
+  it("검사일과 등록일은 동의어다", () => {
+    const elements: ElementEntry[] = [
+      { label: "등록일", controlKind: CONTROL_KIND.date, locators: [{ strategy: "css", value: "#d" }], dropdownOptionContainer: null },
+    ];
+    const hits = ruleMatchStep("검사일 필터", CONTROL_KIND.dateRange, elements, "test-map");
+    assert.ok(hits[0]!.confidence >= 0.8);
   });
 
   it("결과가 신뢰도 내림차순으로 정렬된다", () => {
@@ -367,6 +404,44 @@ describe("matchTcToMap + resolveApprovedSelector", () => {
     assert.ok(emailStep);
     assert.equal(emailStep.status, "matched");
     assert.equal(emailStep.candidates[0]?.method, "exact");
+  });
+
+  it("검토를 리셋하면 자동 매칭 직후 상태로 돌아간다", async () => {
+    const cases = [
+      {
+        id: "tc-reset",
+        screenName: "로그인",
+        kind: "success" as const,
+        title: "로그인 성공",
+        inputs: [{ target: "이메일", value: "", control: CONTROL_KIND.text }],
+        buttonName: "로그인",
+        expectedText: "대시보드",
+      },
+    ];
+    const result = await matchTcToMap({ cases, map: SAMPLE_MAP, mapId: "map-test", jobId: "job-test" });
+    const before = structuredClone(result.steps[0]);
+    assert.ok(before);
+
+    applyReview(result, 0, "reject", undefined, "틀림");
+    assert.equal(result.steps[0]?.status, "rejected");
+
+    resetMatchReview(result);
+    assert.equal(result.steps[0]?.status, before.status);
+    assert.equal(result.steps[0]?.chosenIndex, before.chosenIndex);
+    assert.equal(result.steps[0]?.reviewNote, undefined);
+  });
+
+  it("초기값이 없는 이전 파일도 후보 목록으로 리셋한다", () => {
+    const set: MatchSet = structuredClone(SAMPLE_MATCH_SET);
+    const step = set.steps[0];
+    assert.ok(step);
+    assert.equal(step.initialStatus, undefined, "샘플은 초기값이 없는 이전 형식이다");
+    step.status = "rejected";
+    step.chosenIndex = -1;
+
+    resetMatchReview(set);
+    assert.equal(step.status, "matched");
+    assert.equal(step.chosenIndex, 0);
   });
 
   it("resolveApprovedSelector 가 matched 스텝에서 셀렉터를 반환한다", async () => {

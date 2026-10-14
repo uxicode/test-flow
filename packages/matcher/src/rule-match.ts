@@ -28,11 +28,19 @@ function pickBestLocator(locators: LocatorCandidate[], pinnedSelector?: string):
  * TC 입력 레이블 하나를 요소 목록과 규칙 기반으로 매칭한다.
  * 결과는 confidence 내림차순으로 정렬된다.
  */
+/** 두 선택지 목록에서 겹치는 글자 수 (공백·대소문자 무시) */
+function sharedOptionCount(a: string[], b: string[]): number {
+  const norm = (text: string) => text.replace(/\s+/gu, "").toLowerCase();
+  const right = new Set(b.map(norm));
+  return new Set(a.map(norm).filter((text) => right.has(text))).size;
+}
+
 export function ruleMatchStep(
   stepLabel: string,
   stepKind: ControlKind | undefined,
   elements: ElementEntry[],
   _elementMapId: string,
+  stepOptions: string[] = [],
 ): RuleMatchHit[] {
   const normStep = normalizeLabel(stepLabel);
   const results: RuleMatchHit[] = [];
@@ -58,9 +66,23 @@ export function ruleMatchStep(
     } else if (normStep.includes(normEl) && normEl.length >= 2) {
       confidence = 0.65;
       reason = `역방향 포함 ("${normStep}" ⊇ "${normEl}")`;
-    } else {
-      continue;
     }
+
+    // 선택지 비교: 디자인 드롭다운은 라벨이 현재 값(전체 등)으로 잡히는 경우가 있어 선택지로 같은 필드를 찾는다.
+    const shared = sharedOptionCount(stepOptions, el.options ?? []);
+    if (stepOptions.length >= 2 && shared >= 2) {
+      const allShared = shared === new Set(stepOptions).size;
+      const byOptions = allShared ? 0.85 : 0.7;
+      if (confidence === 0) {
+        confidence = byOptions;
+        reason = `선택지 일치 (${shared}/${stepOptions.length})`;
+      } else {
+        confidence = Math.min(1.0, Math.max(confidence, byOptions) + 0.05);
+        reason += ` + 선택지 일치 (${shared}/${stepOptions.length})`;
+      }
+    }
+
+    if (confidence === 0) continue;
 
     // 컨트롤 타입 조정
     if (stepKind && el.controlKind) {
