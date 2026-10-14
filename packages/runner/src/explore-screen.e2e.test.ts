@@ -174,6 +174,36 @@ describe("exploreScreen", () => {
     }
   });
 
+  it("디자인 드롭다운을 열어 선택지 글자를 함께 저장한다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.setContent(`<!DOCTYPE html><html lang="ko"><body>
+        <div><span>성별</span><div><button type="button" id="select-g" aria-haspopup="listbox" aria-expanded="false">전체</button></div></div>
+        <script>
+          document.getElementById("select-g").addEventListener("click", () => {
+            const shell = document.createElement("div");
+            shell.setAttribute("data-floating-ui-portal", "");
+            shell.innerHTML = '<div style="position:fixed;top:40px;left:0"><ul role="listbox">'
+              + ["전체", "남성", "여성"].map((t) => '<li role="presentation"><button role="option" type="button"><span>' + t + '</span></button></li>').join("")
+              + "</ul></div>";
+            document.body.appendChild(shell);
+            document.addEventListener("keydown", (e) => { if (e.key === "Escape") shell.remove(); }, { once: true });
+          });
+        </script>
+      </body></html>`);
+      const map = await exploreScreen(page, { url: "about:blank", detectDropdowns: true, observeApis: false });
+      const gender = map.elements.find((e) => e.locators.some((l) => l.value === "#select-g"));
+      assert.ok(gender, "성별 드롭다운이 있어야 한다");
+      assert.equal(gender.dropdownOptionContainer, "portal");
+      assert.deepEqual(gender.options, ["전체", "남성", "여성"]);
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
   it("testid 로케이터 후보가 우선순위 1위에 온다", async () => {
     const browser = await chromium.launch({ headless: true });
     const ctx = await browser.newContext();

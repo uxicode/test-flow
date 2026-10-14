@@ -68,7 +68,7 @@ export async function matchTcToMap(options: {
       log(`매칭 중: "${input.target}" (TC: ${tc.title})`);
 
       // 1단계: 규칙 기반 매칭
-      const ruleHits = ruleMatchStep(input.target, stepKind, map.elements, mapId);
+      const ruleHits = ruleMatchStep(input.target, stepKind, map.elements, mapId, input.options ?? []);
 
       const candidates: MatchCandidate[] = ruleHits.map((hit) => ({
         elementMapId: mapId,

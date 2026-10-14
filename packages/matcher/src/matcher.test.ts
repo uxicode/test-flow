@@ -191,6 +191,37 @@ describe("ruleMatchStep", () => {
     assert.equal(hits.length, 0);
   });
 
+  it("라벨이 현재 값(전체)으로 잡힌 디자인 드롭다운도 선택지로 매칭한다", () => {
+    const elements: ElementEntry[] = [
+      {
+        label: "전체",
+        controlKind: CONTROL_KIND.combobox,
+        locators: [{ strategy: "css", value: "#select-_r_4_" }],
+        dropdownOptionContainer: "portal",
+        options: ["전체", "남성", "여성"],
+      },
+      {
+        label: "10개씩 보기",
+        controlKind: CONTROL_KIND.combobox,
+        locators: [{ strategy: "css", value: "#select-_r_6_" }],
+        dropdownOptionContainer: "portal",
+        options: ["10개씩 보기", "20개씩 보기", "50개씩 보기"],
+      },
+    ];
+    const hits = ruleMatchStep("성별 필터", CONTROL_KIND.select, elements, "test-map", ["전체", "남성", "여성"]);
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0]?.bestLocator.value, "#select-_r_4_");
+    assert.ok(hits[0]!.confidence >= 0.8, `자동 매칭 임계값 이상이어야 한다. 실제: ${hits[0]?.confidence}`);
+  });
+
+  it("검사일과 등록일은 동의어다", () => {
+    const elements: ElementEntry[] = [
+      { label: "등록일", controlKind: CONTROL_KIND.date, locators: [{ strategy: "css", value: "#d" }], dropdownOptionContainer: null },
+    ];
+    const hits = ruleMatchStep("검사일 필터", CONTROL_KIND.dateRange, elements, "test-map");
+    assert.ok(hits[0]!.confidence >= 0.8);
+  });
+
   it("결과가 신뢰도 내림차순으로 정렬된다", () => {
     const hits = ruleMatchStep("이름", undefined, SAMPLE_ELEMENTS, "test-map");
     for (let i = 1; i < hits.length; i++) {

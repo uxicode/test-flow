@@ -14,7 +14,7 @@ export const LABEL_SYNONYMS: Record<string, string[]> = {
   날짜: ["date", "일자", "기준일", "기간"],
   시작일: ["start date", "from", "시작 날짜", "from date"],
   종료일: ["end date", "to", "종료 날짜", "to date", "만료일"],
-  검색어: ["keyword", "search", "검색 키워드", "키워드", "query", "검색어 입력"],
+  검색어: ["keyword", "search", "검색 키워드", "키워드", "query", "검색어 입력", "검색"],
   주소: ["address", "주소 검색", "배송지", "배송 주소"],
   전화번호: ["phone", "tel", "연락처", "휴대폰", "핸드폰", "mobile", "phone number", "전화"],
   성별: ["gender", "sex"],
@@ -28,6 +28,7 @@ export const LABEL_SYNONYMS: Record<string, string[]> = {
   내용: ["content", "body", "description", "설명", "메모", "비고", "상세 내용"],
   제목: ["title", "subject", "제목"],
   카테고리: ["category", "분류", "유형", "종류"],
+  등록일: ["검사일", "registered date"],
   조회기간: ["search period", "기간", "조회 기간", "검색 기간"],
   페이지: ["page", "page size", "목록 수", "표시 개수", "페이지당"],
 };

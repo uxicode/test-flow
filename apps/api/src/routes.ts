@@ -198,6 +198,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const { fileId } = req.params as { fileId: string };
     try {
       const tcFile = loadTcFile(fileId);
+      // 분석 작업은 메모리에만 있어 API 재시작 뒤엔 사라진다. 매칭·실행이 이 jobId 를 쓰므로 다시 등록한다.
+      if (!getJob(tcFile.jobId)) {
+        saveJob({ jobId: tcFile.jobId, status: "completed", cases: tcFile.cases, controller: new AbortController() });
+      }
       return tcFile;
     } catch (error) {
       const message = error instanceof Error ? error.message : "TC 파일 로드 실패";

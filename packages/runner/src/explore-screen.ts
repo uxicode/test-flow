@@ -131,18 +131,36 @@ function roleForLocator(raw: RawElement): string | null {
 // 드롭다운 옵션 컨테이너 감지
 // ---------------------------------------------------------------------------
 
+interface DropdownProbe {
+  container: "inline" | "portal" | "listbox" | null;
+  options: string[];
+}
+
+/** 펼쳐진 목록의 선택지 글자를 읽는다. 라벨이 현재 값(전체 등)으로 잡혀도 선택지로 매칭할 수 있게 한다. */
+async function readOpenOptions(page: Page): Promise<string[]> {
+  const texts = await page
+    .locator('[role="listbox"] [role="option"], [role="menu"] [role="menuitem"]')
+    .evaluateAll((nodes) =>
+      nodes
+        .filter((node) => node.getClientRects().length > 0)
+        .map((node) => ((node as HTMLElement).innerText || node.textContent || "").replace(/\s+/g, " ").trim()),
+    )
+    .catch(() => [] as string[]);
+  return [...new Set(texts.filter(Boolean))].slice(0, 30);
+}
+
 async function detectDropdownContainer(
   page: Page,
   entry: ElementEntry,
   locators: LocatorCandidate[],
-): Promise<"inline" | "portal" | "listbox" | null> {
+): Promise<DropdownProbe> {
   const control = entry.controlKind;
-  if (control === CONTROL_KIND.select) return "listbox";
-  if (control !== CONTROL_KIND.combobox) return null;
+  if (control === CONTROL_KIND.select) return { container: "listbox", options: entry.options ?? [] };
+  if (control !== CONTROL_KIND.combobox) return { container: null, options: [] };
 
   // combobox 트리거를 찾아서 클릭해 본다
   const trigger = await findTriggerLocator(page, locators);
-  if (!trigger) return null;
+  if (!trigger) return { container: null, options: [] };
 
   try {
     const portalsBefore = await page.locator('[data-floating-ui-portal], [data-radix-popper-content-wrapper]').count();
@@ -153,12 +171,13 @@ async function detectDropdownContainer(
 
     const portalsAfter = await page.locator('[data-floating-ui-portal], [data-radix-popper-content-wrapper]').count();
     const listboxesAfter = await page.locator('[role="listbox"], [role="menu"]').count();
+    const options = await readOpenOptions(page);
 
     // portal 레이어 새로 생겼으면 portal
     if (portalsAfter > portalsBefore) {
       await page.keyboard.press("Escape").catch(() => undefined);
       await page.waitForTimeout(200);
-      return "portal";
+      return { container: "portal", options };
     }
 
     // listbox/menu role 요소가 새로 생겼으면 — 위치로 판단
@@ -179,14 +198,14 @@ async function detectDropdownContainer(
         .catch(() => null);
       await page.keyboard.press("Escape").catch(() => undefined);
       await page.waitForTimeout(200);
-      return container as "inline" | "portal" | null;
+      return { container: container as "inline" | "portal" | null, options };
     }
 
     await page.keyboard.press("Escape").catch(() => undefined);
-    return null;
+    return { container: null, options };
   } catch {
     await page.keyboard.press("Escape").catch(() => undefined);
-    return null;
+    return { container: null, options: [] };
   }
 }
 
@@ -311,6 +330,7 @@ export async function exploreScreen(page: Page, options: ExploreOptions): Promis
       controlKind,
       locators,
       dropdownOptionContainer: null,
+      ...(raw.nativeOptions.length > 0 ? { options: raw.nativeOptions } : {}),
     });
   }
 
@@ -322,7 +342,9 @@ export async function exploreScreen(page: Page, options: ExploreOptions): Promis
     if (dropdowns.length > 0) {
       log(`드롭다운 ${dropdowns.length}개 감지 중...`);
       for (const entry of dropdowns) {
-        entry.dropdownOptionContainer = await detectDropdownContainer(page, entry, entry.locators);
+        const probe = await detectDropdownContainer(page, entry, entry.locators);
+        entry.dropdownOptionContainer = probe.container;
+        if (probe.options.length > 0) entry.options = probe.options;
       }
     }
   }
