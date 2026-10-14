@@ -10,13 +10,14 @@ import { ruleMatchStep } from "./rule-match.js";
 import { _parseModelResponseForTest } from "./model-match.js";
 import {
   MATCH_VERSION,
+  applyReview,
   deleteMatchSet,
   listMatchSets,
   loadMatchSet,
   saveMatchSet,
   type MatchSet,
 } from "./match-result.js";
-import { matchTcToMap, resolveApprovedSelector } from "./matcher.js";
+import { matchTcToMap, resetMatchReview, resolveApprovedSelector } from "./matcher.js";
 
 // ---------------------------------------------------------------------------
 // 테스트 픽스처
@@ -131,6 +132,11 @@ describe("controlKindsCompatible", () => {
 
   it("text ↔ password 는 호환된다", () => {
     assert.equal(controlKindsCompatible(CONTROL_KIND.text, CONTROL_KIND.password), true);
+  });
+
+  it("date ↔ date_range 는 호환된다", () => {
+    assert.equal(controlKindsCompatible(CONTROL_KIND.date, CONTROL_KIND.dateRange), true);
+    assert.equal(controlKindsCompatible(CONTROL_KIND.dateRange, CONTROL_KIND.date), true);
   });
 
   it("select ↔ radio 는 호환되지 않는다", () => {
@@ -367,6 +373,44 @@ describe("matchTcToMap + resolveApprovedSelector", () => {
     assert.ok(emailStep);
     assert.equal(emailStep.status, "matched");
     assert.equal(emailStep.candidates[0]?.method, "exact");
+  });
+
+  it("검토를 리셋하면 자동 매칭 직후 상태로 돌아간다", async () => {
+    const cases = [
+      {
+        id: "tc-reset",
+        screenName: "로그인",
+        kind: "success" as const,
+        title: "로그인 성공",
+        inputs: [{ target: "이메일", value: "", control: CONTROL_KIND.text }],
+        buttonName: "로그인",
+        expectedText: "대시보드",
+      },
+    ];
+    const result = await matchTcToMap({ cases, map: SAMPLE_MAP, mapId: "map-test", jobId: "job-test" });
+    const before = structuredClone(result.steps[0]);
+    assert.ok(before);
+
+    applyReview(result, 0, "reject", undefined, "틀림");
+    assert.equal(result.steps[0]?.status, "rejected");
+
+    resetMatchReview(result);
+    assert.equal(result.steps[0]?.status, before.status);
+    assert.equal(result.steps[0]?.chosenIndex, before.chosenIndex);
+    assert.equal(result.steps[0]?.reviewNote, undefined);
+  });
+
+  it("초기값이 없는 이전 파일도 후보 목록으로 리셋한다", () => {
+    const set: MatchSet = structuredClone(SAMPLE_MATCH_SET);
+    const step = set.steps[0];
+    assert.ok(step);
+    assert.equal(step.initialStatus, undefined, "샘플은 초기값이 없는 이전 형식이다");
+    step.status = "rejected";
+    step.chosenIndex = -1;
+
+    resetMatchReview(set);
+    assert.equal(step.status, "matched");
+    assert.equal(step.chosenIndex, 0);
   });
 
   it("resolveApprovedSelector 가 matched 스텝에서 셀렉터를 반환한다", async () => {

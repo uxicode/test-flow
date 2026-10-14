@@ -19,18 +19,21 @@ import {
   listMatchSets,
   loadMatchSet,
   matchTcToMap,
+  resetMatchReview,
   resolveApprovedLocator,
   saveMatchSet,
   saveMatchSetById,
   type MatchSet,
 } from "@testflow/matcher";
 import {
+  CONTROL_KIND,
   buildTestCases,
   deleteTcFile,
   listTcFiles,
   loadTcFile,
   parseControlKind,
   saveTcFile,
+  type ControlKind,
   type TcInput,
   type TcTableAssert,
   type TestCase,
@@ -86,12 +89,33 @@ function readLogin(body: Record<string, unknown>): { email: string; password: st
   return { email, password };
 }
 
+/** 날짜 입력의 selector 는 달력 컨테이너 자리라서 매칭된 트리거 버튼을 넣지 않는다. */
+function isDateControl(control: ControlKind | undefined): boolean {
+  return control === CONTROL_KIND.date || control === CONTROL_KIND.dateRange;
+}
+
+/** 삭제된 매칭 결과가 TC 입력에 넣어 둔 셀렉터를 걷어 낸다. 사람이 직접 고른 셀렉터는 그대로 둔다. */
+function removeMatchFromJob(set: MatchSet): void {
+  const job = getJob(set.jobId);
+  if (!job) return;
+  const fromMatch = new Set(set.steps.flatMap((step) => step.candidates.map((candidate) => candidate.bestLocator.value)));
+  job.cases = job.cases.map((testCase) => ({
+    ...testCase,
+    inputs: testCase.inputs.map((input) =>
+      input.selector && fromMatch.has(input.selector)
+        ? { ...input, selector: undefined, selectorStrategy: undefined }
+        : input,
+    ),
+  }));
+}
+
 function applyMatchToJob(set: MatchSet): void {
   const job = getJob(set.jobId);
   if (!job) return;
   job.cases = job.cases.map((testCase) => ({
     ...testCase,
     inputs: testCase.inputs.map((input) => {
+      if (isDateControl(input.control)) return input;
       const byId = set.steps.find((item) => item.tcId === testCase.id && item.stepLabel === input.target);
       const byLabel = set.steps.filter((item) => item.stepLabel === input.target);
       const step = byId ?? (byLabel.length === 1 ? byLabel[0] : undefined);
@@ -410,14 +434,31 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  app.delete("/api/matches/:matchId", async (req, reply) => {
+  app.post("/api/matches/:matchId/reset", async (req, reply) => {
     const { matchId } = req.params as { matchId: string };
+    let set: MatchSet;
     try {
-      deleteMatchSet(matchId);
-      return { ok: true };
+      set = loadMatchSet(matchId);
     } catch {
       return reply.code(404).send({ error: "매칭 결과를 찾지 못했습니다." });
     }
+    resetMatchReview(set);
+    saveMatchSetById(matchId, set);
+    applyMatchToJob(set);
+    return { ok: true };
+  });
+
+  app.delete("/api/matches/:matchId", async (req, reply) => {
+    const { matchId } = req.params as { matchId: string };
+    let set: MatchSet;
+    try {
+      set = loadMatchSet(matchId);
+      deleteMatchSet(matchId);
+    } catch {
+      return reply.code(404).send({ error: "매칭 결과를 찾지 못했습니다." });
+    }
+    removeMatchFromJob(set);
+    return { ok: true };
   });
 
   app.post("/api/analysis/:jobId/cancel", async (req, reply) => {
@@ -484,7 +525,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         : input.value;
       const withValue = { ...input, value: typed };
       if (withValue.selector) return withValue;
-      if (!approvedMatchSet) return withValue;
+      if (!approvedMatchSet || isDateControl(input.control)) return withValue;
       const resolved = resolveApprovedLocator(approvedMatchSet, input.target);
       return resolved
         ? { ...withValue, selector: resolved.selector, selectorStrategy: resolved.selectorStrategy }

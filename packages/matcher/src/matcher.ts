@@ -128,6 +128,8 @@ export async function matchTcToMap(options: {
         candidates,
         chosenIndex,
         status,
+        initialChosenIndex: chosenIndex,
+        initialStatus: status,
       });
     }
   }
@@ -190,3 +192,25 @@ export function resolveApprovedSelector(set: MatchSet, stepLabel: string): strin
   return resolveApprovedLocator(set, stepLabel)?.selector;
 }
 
+
+/**
+ * 사람의 검토 결정을 모두 지우고 자동 매칭 직후 상태로 되돌린다.
+ * 초기값이 없는 이전 파일은 후보 목록에서 자동 매칭 규칙을 다시 적용해 복원한다.
+ */
+export function resetMatchReview(set: MatchSet): void {
+  for (const step of set.steps) {
+    const fallback = initialDecision(step.candidates);
+    const chosenIndex = step.initialChosenIndex ?? fallback.chosenIndex;
+    step.chosenIndex = chosenIndex >= 0 && chosenIndex < step.candidates.length ? chosenIndex : -1;
+    step.status = step.initialStatus ?? fallback.status;
+    delete step.reviewNote;
+  }
+}
+
+function initialDecision(candidates: MatchCandidate[]): { chosenIndex: number; status: MatchStatus } {
+  if (candidates.length === 0) return { chosenIndex: -1, status: "review" };
+  const top = candidates[0]?.confidence ?? 0;
+  if (top >= EXACT_THRESHOLD && !isAmbiguous(candidates)) return { chosenIndex: 0, status: "matched" };
+  const byModel = candidates.findIndex((candidate) => candidate.method === "model");
+  return { chosenIndex: byModel >= 0 ? byModel : 0, status: "review" };
+}

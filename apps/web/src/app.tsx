@@ -12,9 +12,11 @@ import {
   playwrightSpecFileName,
 } from "@testflow/tc/playwright-spec";
 import {
+  deleteJson,
   getJson,
   isHashedCssModuleClient,
   openLogSocket,
+  patchJson,
   postJson,
   type AnalysisView,
   type ElementEntry,
@@ -114,6 +116,8 @@ function casesWithMatch(current: TestCase[], set: MatchSet): TestCase[] {
   return current.map((testCase) => ({
     ...testCase,
     inputs: testCase.inputs.map((input) => {
+      // 날짜 입력의 selector 는 달력 컨테이너 자리다. 매칭된 트리거 버튼을 넣으면 달력 범위로 잘못 쓰인다.
+      if (input.control === "date" || input.control === "date_range") return input;
       const step = stepForInput(set, testCase.id, input.target);
       if (!step) return input;
       if (step.status === "rejected" || step.chosenIndex < 0) {
@@ -129,6 +133,19 @@ function casesWithMatch(current: TestCase[], set: MatchSet): TestCase[] {
         selectorStrategy: candidate.bestLocator.strategy,
       };
     }),
+  }));
+}
+
+/** 삭제한 매칭 결과가 넣어 둔 셀렉터를 걷어 낸다. 사람이 직접 고른 셀렉터는 그대로 둔다. */
+function casesWithoutMatch(current: TestCase[], set: MatchSet): TestCase[] {
+  const fromMatch = new Set(set.steps.flatMap((step) => step.candidates.map((candidate) => candidate.bestLocator.value)));
+  return current.map((testCase) => ({
+    ...testCase,
+    inputs: testCase.inputs.map((input) =>
+      input.selector && fromMatch.has(input.selector)
+        ? { ...input, selector: undefined, selectorStrategy: undefined }
+        : input,
+    ),
   }));
 }
 
@@ -166,6 +183,8 @@ export function App() {
   const [elementMaps, setElementMaps] = useState<ElementMapMeta[]>([]);
   const [showElementMaps, setShowElementMaps] = useState(false);
   const [selectedMap, setSelectedMap] = useState<ScreenElementMap | null>(null);
+  const [selectedMapId, setSelectedMapId] = useState("");
+  const [deletingMapId, setDeletingMapId] = useState("");
   const [isBusyExplore, setIsBusyExplore] = useState(false);
   const exploreSocketRef = useRef<WebSocket | null>(null);
   // Phase 3: 매칭 + 검토
@@ -176,6 +195,8 @@ export function App() {
   const [matchList, setMatchList] = useState<MatchSetMeta[]>([]);
   const [showMatchList, setShowMatchList] = useState(false);
   const [isBusyMatch, setIsBusyMatch] = useState(false);
+  const [isResettingReview, setIsResettingReview] = useState(false);
+  const [deletingMatchId, setDeletingMatchId] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -527,6 +548,24 @@ export function App() {
   async function loadElementMapDetail(mapId: string) {
     const map = await getJson<ScreenElementMap>(`/api/element-maps/${mapId}`);
     setSelectedMap(map);
+    setSelectedMapId(mapId);
+  }
+
+  async function handleDeleteElementMap(mapId: string) {
+    if (!window.confirm("이 요소 맵을 삭제하시겠습니까?")) return;
+    setDeletingMapId(mapId);
+    try {
+      await deleteJson(`/api/element-maps/${mapId}`);
+      setElementMaps((current) => current.filter((m) => m.mapId !== mapId));
+      if (selectedMapId === mapId) {
+        setSelectedMap(null);
+        setSelectedMapId("");
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "요소 맵 삭제 실패");
+    } finally {
+      setDeletingMapId("");
+    }
   }
 
   async function handleStartExplore() {
@@ -593,10 +632,46 @@ export function App() {
   async function handleReviewAction(stepIndex: number, action: "approve" | "choose" | "reject", chosenIndex?: number) {
     if (!currentMatchId) return;
     try {
-      await postJson(`/api/matches/${currentMatchId}/steps/${stepIndex}`, { action, chosenIndex });
+      await patchJson(`/api/matches/${currentMatchId}/steps/${stepIndex}`, { action, chosenIndex });
       await loadMatchSetDetail(currentMatchId);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "검토 저장 실패");
+    }
+  }
+
+  async function handleResetReview() {
+    if (!currentMatchId) return;
+    if (!window.confirm("승인·거부·후보 선택을 모두 지우고 자동 매칭 결과로 되돌리시겠습니까?")) return;
+    setIsResettingReview(true);
+    try {
+      await postJson(`/api/matches/${currentMatchId}/reset`, {});
+      await loadMatchSetDetail(currentMatchId);
+      if (showMatchList) await loadMatchList();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "검토 리셋 실패");
+    } finally {
+      setIsResettingReview(false);
+    }
+  }
+
+  async function handleDeleteMatch(id: string) {
+    if (!window.confirm("이 매칭 결과를 삭제하시겠습니까?")) return;
+    setDeletingMatchId(id);
+    try {
+      await deleteJson(`/api/matches/${id}`);
+      setMatchList((current) => current.filter((m) => m.matchId !== id));
+      if (currentMatchId === id) {
+        if (matchSet) {
+          const removed = matchSet;
+          setCases((current) => casesWithoutMatch(current, removed));
+        }
+        setMatchSet(null);
+        setCurrentMatchId("");
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "매칭 결과 삭제 실패");
+    } finally {
+      setDeletingMatchId("");
     }
   }
 
@@ -911,13 +986,23 @@ export function App() {
                     {m.screenTitle || m.url}
                     <span className="ml-2 text-slate-500">{m.elementCount}개 · {new Date(m.exploredAt).toLocaleString("ko-KR")}</span>
                   </span>
-                  <button
-                    type="button"
-                    className="shrink-0 rounded bg-sky-700/40 px-2 py-0.5 text-sky-300 hover:bg-sky-700/60"
-                    onClick={() => void loadElementMapDetail(m.mapId)}
-                  >
-                    보기
-                  </button>
+                  <span className="flex shrink-0 gap-1.5">
+                    <button
+                      type="button"
+                      className="rounded bg-sky-700/40 px-2 py-0.5 text-sky-300 hover:bg-sky-700/60"
+                      onClick={() => void loadElementMapDetail(m.mapId)}
+                    >
+                      보기
+                    </button>
+                    <button
+                      type="button"
+                      disabled={deletingMapId === m.mapId}
+                      className="rounded bg-rose-900/40 px-2 py-0.5 text-rose-300 hover:bg-rose-900/60 disabled:opacity-50"
+                      onClick={() => void handleDeleteElementMap(m.mapId)}
+                    >
+                      {deletingMapId === m.mapId ? "삭제 중…" : "삭제"}
+                    </button>
+                  </span>
                 </li>
               ))}
             </ul>
@@ -985,13 +1070,23 @@ export function App() {
                     매칭 {new Date(m.createdAt).toLocaleString("ko-KR")}
                     <span className="ml-2 text-slate-500">전체 {m.totalSteps}개 · 검토 {m.reviewCount}개 · 완료 {m.matchedCount}개</span>
                   </span>
-                  <button
-                    type="button"
-                    className="shrink-0 rounded bg-purple-700/40 px-2 py-0.5 text-purple-300 hover:bg-purple-700/60"
-                    onClick={() => void loadMatchSetDetail(m.matchId)}
-                  >
-                    검토
-                  </button>
+                  <span className="flex shrink-0 gap-1.5">
+                    <button
+                      type="button"
+                      className="rounded bg-purple-700/40 px-2 py-0.5 text-purple-300 hover:bg-purple-700/60"
+                      onClick={() => void loadMatchSetDetail(m.matchId)}
+                    >
+                      검토
+                    </button>
+                    <button
+                      type="button"
+                      disabled={deletingMatchId === m.matchId}
+                      className="rounded bg-rose-900/40 px-2 py-0.5 text-rose-300 hover:bg-rose-900/60 disabled:opacity-50"
+                      onClick={() => void handleDeleteMatch(m.matchId)}
+                    >
+                      {deletingMatchId === m.matchId ? "삭제 중…" : "삭제"}
+                    </button>
+                  </span>
                 </li>
               ))}
             </ul>
@@ -1002,8 +1097,18 @@ export function App() {
           <div className="space-y-3 rounded border border-slate-700 bg-slate-950/60 p-3">
             <div className="flex items-center justify-between">
               <p className="text-xs font-medium text-slate-300">매칭 검토</p>
-              <span className="text-[10px] text-slate-500">
-                검토 필요: {matchSet.steps.filter((s) => s.status === "review").length} / 전체 {matchSet.steps.length}
+              <span className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-500">
+                  검토 필요: {matchSet.steps.filter((s) => s.status === "review").length} / 전체 {matchSet.steps.length}
+                </span>
+                <button
+                  type="button"
+                  disabled={isResettingReview}
+                  className="rounded bg-slate-700/60 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+                  onClick={() => void handleResetReview()}
+                >
+                  {isResettingReview ? "리셋 중…" : "검토 리셋"}
+                </button>
               </span>
             </div>
             <ul className="space-y-2 max-h-96 overflow-y-auto">

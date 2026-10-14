@@ -15,7 +15,7 @@ export {
   type TcStepMatch,
 } from "./match-result.js";
 
-export { matchTcToMap, resolveApprovedLocator, resolveApprovedSelector, EXACT_THRESHOLD, MODEL_THRESHOLD, type ResolvedLocator } from "./matcher.js";
+export { matchTcToMap, resetMatchReview, resolveApprovedLocator, resolveApprovedSelector, EXACT_THRESHOLD, MODEL_THRESHOLD, type ResolvedLocator } from "./matcher.js";
 export { _parseModelResponseForTest, MAX_MODEL_CANDIDATES } from "./model-match.js";
 export { normalizeLabel, isSynonym, controlKindsCompatible } from "./normalize.js";
 export { ruleMatchStep } from "./rule-match.js";
