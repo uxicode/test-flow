@@ -147,6 +147,33 @@ describe("exploreScreen", () => {
     }
   });
 
+  it("뷰포트 오른쪽 바깥에 놓인 필터도 수집한다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const page = await ctx.newPage();
+    try {
+      await page.setContent(`<!DOCTYPE html><html lang="ko"><body>
+        <div style="display:flex; gap:24px; min-width:1900px">
+          <div><label for="q">검색 조건</label><input id="q" placeholder="이름, 등록번호"></div>
+          <div style="margin-left:auto; display:flex; gap:8px; align-items:center">
+            <span>성별</span>
+            <div><button type="button" id="select-gender" aria-haspopup="listbox" aria-expanded="false">전체</button></div>
+          </div>
+        </div>
+        <span style="position:absolute; left:-9999px"><input aria-label="숨김 입력"></span>
+      </body></html>`);
+      const map = await exploreScreen(page, { url: "about:blank", detectDropdowns: false, observeApis: false });
+
+      const gender = map.elements.find((e) => e.label === "성별");
+      assert.ok(gender, `성별 필터가 있어야 한다. 실제: ${map.elements.map((e) => e.label).join(", ")}`);
+      assert.equal(gender.controlKind, CONTROL_KIND.combobox);
+      assert.ok(!map.elements.some((e) => e.label === "숨김 입력"), "화면 왼쪽 밖으로 숨긴 요소는 수집하지 않는다");
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
   it("testid 로케이터 후보가 우선순위 1위에 온다", async () => {
     const browser = await chromium.launch({ headless: true });
     const ctx = await browser.newContext();

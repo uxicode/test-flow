@@ -49,8 +49,9 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
   function isVisible(el) {
     var rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return false;
-    if (rect.bottom < 0 || rect.top > window.innerHeight) return false;
-    if (rect.right < 0 || rect.left > window.innerWidth) return false;
+    // 뷰포트 오른쪽·아래로 넘친 요소는 스크롤하면 조작할 수 있으니 남긴다.
+    // 왼쪽·위로 밀어 둔 요소(left:-9999px 같은 숨김 기법)만 버린다.
+    if (rect.bottom + window.scrollY < 0 || rect.right + window.scrollX < 0) return false;
     try {
       var style = window.getComputedStyle(el);
       if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") return false;
