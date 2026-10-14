@@ -531,6 +531,11 @@ export function App() {
             window.clearInterval(timer);
             if (view.status === "completed" && view.mapId) {
               void loadElementMapDetail(view.mapId);
+              // 접힌 상태여도 새 요소 맵이 바로 보이도록 목록을 펼치고 다시 불러온다.
+              setShowElementMaps(true);
+              void loadElementMapList().catch((error: unknown) => {
+                setErrorMessage(error instanceof Error ? error.message : "요소 맵 목록을 불러오지 못했습니다.");
+              });
             }
           }
         })
