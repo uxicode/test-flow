@@ -44,6 +44,8 @@ export function controlKindsCompatible(a: ControlKind | undefined, b: ControlKin
     [CONTROL_KIND.textarea, CONTROL_KIND.text],
     [CONTROL_KIND.text, CONTROL_KIND.password],
     [CONTROL_KIND.password, CONTROL_KIND.text],
+    [CONTROL_KIND.date, CONTROL_KIND.dateRange],
+    [CONTROL_KIND.dateRange, CONTROL_KIND.date],
   ];
   return COMPATIBLE_PAIRS.some(([x, y]) => x === a && y === b);
 }

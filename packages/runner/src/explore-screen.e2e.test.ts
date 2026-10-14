@@ -44,7 +44,24 @@ const FIXTURE_HTML = `<!DOCTYPE html>
       <label for="agree">동의</label>
       <input id="agree" type="checkbox">
     </div>
+    <div class="filter">
+      <span>성별 필터</span>
+      <div class="select-wrap"><button type="button" aria-expanded="false" id="gender-trigger">전체</button></div>
+    </div>
+    <div class="filter">
+      <span>검사일</span>
+      <div class="picker-wrap"><button type="button" aria-haspopup="dialog">2026.10.01 ~ 2026.10.14</button></div>
+    </div>
+    <div class="filter">
+      <span>회원 구분</span>
+      <div class="select-wrap"><button type="button" class="select-trigger">전체<svg width="8" height="8"></svg></button></div>
+    </div>
+    <div class="filter">
+      <span>검색 조건</span>
+      <button type="button">조회</button>
+    </div>
     <button type="submit">조회</button>
+    <button type="reset">초기화</button>
   </form>
 </body>
 </html>`;
@@ -93,6 +110,37 @@ describe("exploreScreen", () => {
       assert.ok(findByKind(CONTROL_KIND.radio).length >= 2, "radio 타입 요소가 2개 이상이어야 한다");
       // checkbox
       assert.ok(findByKind(CONTROL_KIND.checkbox).length >= 1, "checkbox 타입 요소가 있어야 한다");
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("팝업을 여는 커스텀 필터 버튼은 근처 라벨로 수집하고, 일반 버튼은 수집하지 않는다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      const map = await exploreScreen(page, { url: baseUrl, detectDropdowns: false, observeApis: false });
+
+      const gender = map.elements.find((e) => e.label === "성별 필터");
+      assert.ok(gender, "성별 필터 버튼이 있어야 한다");
+      assert.equal(gender.controlKind, CONTROL_KIND.combobox);
+      assert.deepEqual(gender.locators, [{ strategy: "css", value: "#gender-trigger" }]);
+
+      const examDate = map.elements.find((e) => e.label === "검사일");
+      assert.ok(examDate, "검사일 버튼이 있어야 한다");
+      assert.equal(examDate.controlKind, CONTROL_KIND.dateRange);
+
+      const status = map.elements.find((e) => e.label === "회원 구분");
+      assert.ok(status, "ARIA 표시가 없는 디자인 드롭다운도 라벨 옆 버튼이면 수집한다");
+      assert.equal(status.controlKind, CONTROL_KIND.combobox);
+
+      const labels = map.elements.map((e) => e.label);
+      assert.ok(!labels.includes("검색 조건"), "라벨 옆이라도 조회 같은 동작 버튼은 수집하지 않는다");
+      assert.ok(!labels.includes("조회"), "조회 버튼은 수집하지 않는다");
+      assert.ok(!labels.includes("초기화"), "초기화 버튼은 수집하지 않는다");
     } finally {
       await ctx.close();
       await browser.close();
