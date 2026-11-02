@@ -15,6 +15,7 @@
     "lint": "echo \"no lint\""
   },
   "dependencies": {
+    "@testflow/axure": "workspace:*",
     "@testflow/figma": "workspace:*"
   },
   "devDependencies": {

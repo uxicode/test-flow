@@ -25,4 +25,16 @@ describe("buildQuestionPrompt", () => {
     assert.ok(prompt.includes("사용자 현황 화면"));
     assert.ok(prompt.includes('{"screenName":"","inputs":[{"target":"","control":"text"'));
   });
+  it("조회된 값을 표시만 하는 요소는 입력에서 제외하라는 규칙이 들어간다", () => {
+    const prompt = buildQuestionPrompt("검사 결과 상세", { vision: true });
+
+    assert.ok(prompt.includes("조회된 값을 보여 주기만 하는 요소"));
+    assert.ok(prompt.includes("inputs는 빈 배열([])"));
+  });
+  it("소유·대상을 나타내는 말과 영역 제목은 입력으로 만들지 말라는 규칙이 들어간다", () => {
+    const prompt = buildQuestionPrompt("대상자 정보 영역");
+
+    assert.ok(prompt.includes("소유·대상을 나타내는 말은 입력 항목이 아닙니다"));
+    assert.ok(prompt.includes("영역 제목"));
+  });
 });

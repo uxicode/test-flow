@@ -74,7 +74,21 @@ export interface PlannedQuestion {
   text: string;
 }
 
+/** 모델 호출 한 번의 단계별 소요. 병목이 로드·프롬프트 처리·생성 중 어디인지 가리는 데 쓴다. */
+export interface AskMetrics {
+  loadMs: number;
+  promptTokens: number;
+  promptMs: number;
+  outputTokens: number;
+  outputMs: number;
+}
+
 export interface AnalysisWorker {
-  ask(input: { text: string; images?: string[]; signal: AbortSignal }): Promise<string>;
+  ask(input: {
+    text: string;
+    images?: string[];
+    signal: AbortSignal;
+    onMetrics?: (metrics: AskMetrics) => void;
+  }): Promise<string>;
   unload(): Promise<void>;
 }

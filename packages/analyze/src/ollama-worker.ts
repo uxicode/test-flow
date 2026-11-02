@@ -1,4 +1,4 @@
-import { ollamaKeepAlive, textModel, visionNumCtx } from "./models.js";
+import { ollamaKeepAlive, ollamaNumPredict, textModel, visionNumCtx } from "./models.js";
 import { type AnalysisWorker } from "./types.js";
 
 export function ollamaErrorText(raw: string): string {
@@ -25,6 +25,8 @@ export function createOllamaWorker(options?: {
   baseUrl?: string;
   model?: string;
   numCtx?: number;
+  /** 응답 뒤 모델을 메모리에 남겨 둘 시간. 없으면 OLLAMA_KEEP_ALIVE (기본 0 = 바로 내림) */
+  keepAlive?: number | string;
   fetchImpl?: typeof fetch;
 }): AnalysisWorker {
   const baseUrl = (options?.baseUrl || process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/$/u, "");
@@ -39,7 +41,7 @@ export function createOllamaWorker(options?: {
       };
       if (input.images?.length) message.images = input.images;
       const numCtx = options?.numCtx ?? (input.images?.length ? visionNumCtx() : undefined);
-      const keepAlive = ollamaKeepAlive();
+      const keepAlive = options?.keepAlive ?? ollamaKeepAlive();
       const response = await fetchImpl(`${baseUrl}/api/chat`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -49,7 +51,7 @@ export function createOllamaWorker(options?: {
           format: "json",
           keep_alive: keepAlive,
           messages: [message],
-          ...(numCtx ? { options: { num_ctx: numCtx } } : {}),
+          options: { ...(numCtx ? { num_ctx: numCtx } : {}), num_predict: ollamaNumPredict() },
         }),
         signal: input.signal,
       });
@@ -61,7 +63,26 @@ export function createOllamaWorker(options?: {
             : `Ollama 요청에 실패했습니다. HTTP ${response.status}`,
         );
       }
-      const payload = (await response.json()) as { message?: { content?: string } };
+      const payload = (await response.json()) as {
+        message?: { content?: string };
+        done_reason?: string;
+        load_duration?: number;
+        prompt_eval_count?: number;
+        prompt_eval_duration?: number;
+        eval_count?: number;
+        eval_duration?: number;
+      };
+      const nsToMs = (ns: number | undefined): number => Math.round((ns ?? 0) / 1_000_000);
+      input.onMetrics?.({
+        loadMs: nsToMs(payload.load_duration),
+        promptTokens: payload.prompt_eval_count ?? 0,
+        promptMs: nsToMs(payload.prompt_eval_duration),
+        outputTokens: payload.eval_count ?? 0,
+        outputMs: nsToMs(payload.eval_duration),
+      });
+      if (payload.done_reason === "length") {
+        throw new Error(`모델 출력이 상한(${ollamaNumPredict()}토큰)에 도달해 중단했습니다.`);
+      }
       const content = payload.message?.content;
       if (!content) throw new Error("Ollama 응답이 비어 있습니다.");
       return content;

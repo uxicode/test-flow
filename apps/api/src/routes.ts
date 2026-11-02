@@ -1,7 +1,19 @@
 import "@fastify/websocket";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { createOllamaWorker, runAnalysisJob, textModel, visionModel } from "@testflow/analyze";
+import {
+  ANALYSIS_KEEP_ALIVE,
+  createFileAnalysisCache,
+  createOllamaWorker,
+  isAxureUrl,
+  loadAnalysisFile,
+  runAnalysisJob,
+  saveAnalysisFile,
+  textModel,
+  visionModel,
+} from "@testflow/analyze";
 import {
   deleteElementMap,
   findLatestMapByUrl,
@@ -82,6 +94,17 @@ function readToken(body: Record<string, unknown>): string {
   return typeof body.token === "string" ? body.token.trim() : "";
 }
 
+/** 화면 탐색 로그를 파일로도 남긴다. 화면 로그를 복사하다 잘릴 때 파일로 그대로 확인할 수 있다. */
+function appendExploreLog(exploreId: string, message: string): void {
+  try {
+    const dir = path.resolve(process.cwd(), "../../data/explore-logs");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, `${exploreId}.log`), `${new Date().toISOString()} ${message}\n`, "utf8");
+  } catch {
+    // 로그 파일 저장 실패는 탐색에 영향을 주지 않는다.
+  }
+}
+
 function readLogin(body: Record<string, unknown>): { email: string; password: string } | undefined {
   const email = typeof body.email === "string" ? body.email.trim() : "";
   const password = typeof body.password === "string" ? body.password : "";
@@ -137,6 +160,7 @@ function applyMatchToJob(set: MatchSet): void {
 }
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  const analysisCache = createFileAnalysisCache();
   app.get("/api/health", async () => ({ ok: true }));
 
   app.post("/api/analysis", async (req, reply) => {
@@ -144,24 +168,27 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const url = typeof body.url === "string" ? body.url : "";
     const specText = typeof body.specText === "string" ? body.specText : "";
     const token = readToken(body);
-    if ((!url || !token) && !specText.trim()) {
+    const axure = isAxureUrl(url);
+    if ((!url || (!token && !axure)) && !specText.trim()) {
       if (url && !token) return reply.code(400).send({ error: "Figma 토큰을 입력하세요." });
-      return reply.code(400).send({ error: "Figma URL 또는 텍스트 기획서가 필요합니다." });
+      return reply.code(400).send({ error: "Figma·Axure URL 또는 텍스트 기획서가 필요합니다." });
     }
     const jobId = randomUUID();
     const controller = new AbortController();
     saveJob({ jobId, status: "fetching", cases: [], controller });
-    const textWorker = createOllamaWorker({ model: textModel() });
-    const visionWorker = createOllamaWorker({ model: visionModel() });
+    // 질문마다 모델을 다시 올리지 않도록 분석 중에는 올려 두고, 작업이 끝나면 runAnalysisJob 이 내린다.
+    const textWorker = createOllamaWorker({ model: textModel(), keepAlive: ANALYSIS_KEEP_ALIVE });
+    const visionWorker = createOllamaWorker({ model: visionModel(), keepAlive: ANALYSIS_KEEP_ALIVE });
     void runAnalysisJob({
       jobId,
-      ...(url && token ? { url, token } : {}),
+      ...(axure ? { url } : url && token ? { url, token } : {}),
       ...(specText.trim() ? { specText } : {}),
       worker: textWorker,
       textWorker,
       visionWorker,
       textModel: textModel(),
       visionModel: visionModel(),
+      cache: analysisCache,
       signal: controller.signal,
       onEvent: (event) => {
         publishLog(jobId, event.message);
@@ -173,6 +200,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           if (event.status === "completed" || event.status === "cancelled") {
             job.cases = buildTestCases(event.result.screens);
             publishLog(jobId, `TC ${job.cases.length}개 작성`);
+            try {
+              saveAnalysisFile(jobId, event.result.screens);
+            } catch {
+              // 분석 파일 저장 실패는 이번 분석 결과에 영향을 주지 않는다.
+            }
             try {
               saveTcFile(jobId, job.cases);
             } catch {
@@ -258,11 +290,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           login,
           signal: controller.signal,
           headless: true,
-          onLog: (msg) => publishLog(exploreId, msg),
+          onLog: (msg) => {
+            publishLog(exploreId, msg);
+            appendExploreLog(exploreId, msg);
+          },
         });
         state.status = "completed";
         state.mapId = mapId;
         publishLog(exploreId, `완료 (mapId: ${mapId})`);
+        appendExploreLog(exploreId, `완료 (mapId: ${mapId})`);
       } catch (error) {
         if (controller.signal.aborted) {
           state.status = "cancelled";
@@ -270,6 +306,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           state.status = "failed";
           state.error = error instanceof Error ? error.message : "탐색 실패";
           publishLog(exploreId, `오류: ${state.error}`);
+          appendExploreLog(exploreId, `오류: ${state.error}`);
         }
       }
     })();
@@ -463,6 +500,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     removeMatchFromJob(set);
     return { ok: true };
+  });
+
+  // 저장된 분석 결과로 모델 없이 TC 를 다시 만든다.
+  app.post("/api/analysis/:jobId/rebuild-tc", async (req, reply) => {
+    const { jobId } = req.params as { jobId: string };
+    const screens = loadAnalysisFile(jobId);
+    if (!screens) return reply.code(404).send({ error: "저장된 분석 결과를 찾지 못했습니다." });
+    const cases = buildTestCases(screens);
+    const job = getJob(jobId);
+    if (job) job.cases = cases;
+    const meta = saveTcFile(jobId, cases);
+    return { cases, file: meta };
   });
 
   app.post("/api/analysis/:jobId/cancel", async (req, reply) => {

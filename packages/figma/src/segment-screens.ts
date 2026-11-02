@@ -1,7 +1,19 @@
+export type ScreenSource = "figma" | "axure";
+
 export interface ScreenSegment {
   screenKey: string;
   screenName: string;
   body: string;
+  /** 기획서의 화면 ID. 예: MA-002. 이름에 ID 표기가 없으면 비어 있다. */
+  screenId?: string;
+  source?: ScreenSource;
+}
+
+const SCREEN_ID = /(?<![A-Z\d-])([A-Z]{2,3}-\d{3})(?!\d)/u;
+
+/** `[MA-002] 홈 메인`, `[PI-001]환자정보` 같은 화면 제목에서 화면 ID를 뽑는다. `XX-AP-001` 처럼 접두가 더 붙은 표기는 ID로 보지 않는다. */
+export function parseScreenId(title: string): string | undefined {
+  return SCREEN_ID.exec(title)?.[1];
 }
 
 export interface FeatureSlice {
@@ -42,10 +54,13 @@ export function segmentScreens(lines: string[]): ScreenSegment[] {
   function flush(): void {
     if (!name) return;
     index += 1;
+    const screenId = parseScreenId(name);
     screens.push({
       screenKey: `screen-${index}`,
       screenName: name.replace(/[\[\]]/g, " ").replace(/\s+/g, " ").trim(),
       body: body.join("\n").trim(),
+      source: "figma",
+      ...(screenId ? { screenId } : {}),
     });
     name = "";
     body = [];

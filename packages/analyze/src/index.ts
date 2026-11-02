@@ -1,4 +1,11 @@
-export { textModel, visionModel } from "./models.js";
+export { isAxureUrl } from "@testflow/axure";
+export { loadAnalysisFile, saveAnalysisFile } from "./analysis-file.js";
+export {
+  createFileAnalysisCache,
+  questionCacheKey,
+  type AnalysisCache,
+} from "./analysis-cache.js";
+export { ANALYSIS_KEEP_ALIVE, textModel, visionModel } from "./models.js";
 export { createOllamaWorker } from "./ollama-worker.js";
 export { runAnalysisJob } from "./orchestrator.js";
 export { planQuestions } from "./plan-questions.js";

@@ -1,5 +1,14 @@
-import { fetchSpecImage, fetchSpecLines, segmentScreens, type FetchLike } from "@testflow/figma";
-import { textModel, visionMaxSide, visionModel } from "./models.js";
+import { fetchAxureScreens, isAxureUrl, type TextFetchLike } from "@testflow/axure";
+import {
+  fetchSpecImage,
+  fetchSpecLines,
+  segmentScreens,
+  type FetchLike,
+  type ScreenSegment,
+} from "@testflow/figma";
+import { questionCacheKey, type AnalysisCache } from "./analysis-cache.js";
+import { textModel, visionEnabled, visionMaxSide, visionModel } from "./models.js";
+import { isDisplayOnlyQuestion, keepRealInputs } from "./keep-real-inputs.js";
 import { keepSpecWarnings } from "./keep-spec-warnings.js";
 import { parseModelJson } from "./parse-model-json.js";
 import { planQuestions } from "./plan-questions.js";
@@ -12,6 +21,7 @@ import {
   type AnalysisEvent,
   type AnalysisResult,
   type AnalysisWorker,
+  type AskMetrics,
   type PlannedQuestion,
   type QuestionRecord,
   type QuestionStatus,
@@ -32,17 +42,39 @@ function linkAbort(parent: AbortSignal, child: AbortController): void {
   parent.addEventListener("abort", () => child.abort(), { once: true });
 }
 
-async function unloadQuestionWorkers(options: {
-  hadVision: boolean;
-  visionWorker: AnalysisWorker;
-  textWorker: AnalysisWorker;
-}): Promise<void> {
-  if (options.hadVision) await options.visionWorker.unload().catch(() => undefined);
-  if (options.textWorker !== options.visionWorker) {
-    await options.textWorker.unload().catch(() => undefined);
-  } else if (!options.hadVision) {
-    await options.textWorker.unload().catch(() => undefined);
-  }
+/**
+ * 한 번에 한 모델만 메모리에 둔다.
+ * 질문마다 내렸다 올리면 모델 파일(수 GB)을 매번 다시 읽으므로, 다른 모델로 바꿀 때만 앞 모델을 내린다.
+ */
+function createModelSlot() {
+  let loaded: AnalysisWorker | null = null;
+  return {
+    async use(worker: AnalysisWorker): Promise<void> {
+      if (loaded && loaded !== worker) await loaded.unload().catch(() => undefined);
+      loaded = worker;
+    },
+    async release(): Promise<void> {
+      if (loaded) await loaded.unload().catch(() => undefined);
+      loaded = null;
+    },
+  };
+}
+
+/** 로그에 남길 질문 요약: 화면명 줄을 뺀 본문 앞부분과 전체 글자 수. */
+function describeQuestion(question: PlannedQuestion): string {
+  const body = question.text.startsWith(question.screenName)
+    ? question.text.slice(question.screenName.length)
+    : question.text;
+  const flat = body.replace(/\s+/gu, " ").trim();
+  const preview = flat.length > 50 ? `${flat.slice(0, 50)}…` : flat;
+  return `${preview || "(본문 없음)"} (${question.text.length}자)`;
+}
+
+/** 모델 호출의 단계별 소요를 한 줄로 만든다. 예: ` · 로드 0.1초 · 입력 2,310토큰 3.2초 · 출력 480토큰 41.0초` */
+function describeMetrics(metrics: AskMetrics | undefined): string {
+  if (!metrics) return "";
+  const sec = (ms: number): string => `${(ms / 1000).toFixed(1)}초`;
+  return ` · 로드 ${sec(metrics.loadMs)} · 입력 ${metrics.promptTokens.toLocaleString("en-US")}토큰 ${sec(metrics.promptMs)} · 출력 ${metrics.outputTokens.toLocaleString("en-US")}토큰 ${sec(metrics.outputMs)}`;
 }
 
 function linesFromSpec(text: string): string[] {
@@ -58,11 +90,17 @@ export async function runAnalysisJob(options: {
   token?: string;
   specText?: string;
   fetchImpl?: FetchLike;
+  /** Axure Cloud 게시본을 읽는 fetch. 테스트에서 바꿔 끼운다. */
+  axureFetchImpl?: TextFetchLike;
   worker: AnalysisWorker;
   textWorker?: AnalysisWorker;
   visionWorker?: AnalysisWorker;
   textModel?: string;
   visionModel?: string;
+  /** 화면 이미지를 비전 모델에 넣을지. 없으면 환경 변수 ANALYSIS_USE_VISION(기본 끔)을 따른다. */
+  useVision?: boolean;
+  /** 질문별 모델 응답 캐시. 같은 질문은 모델을 다시 부르지 않는다. */
+  cache?: AnalysisCache;
   timeoutMs?: number;
   signal: AbortSignal;
   onEvent: (event: AnalysisEvent) => void;
@@ -92,6 +130,7 @@ export async function runAnalysisJob(options: {
     return result;
   }
 
+  const modelSlot = createModelSlot();
   try {
     if (options.signal.aborted) return finish(JOB_STATUS.cancelled, "사용자가 중지했습니다.");
     const specText = options.specText?.trim() ?? "";
@@ -99,8 +138,16 @@ export async function runAnalysisJob(options: {
     const figmaToken = options.token?.trim() ?? "";
     let lines: string[] = [];
     let image: string | null = null;
+    let axureSegments: ScreenSegment[] | null = null;
 
-    if (specText && !figmaUrl) {
+    if (figmaUrl && isAxureUrl(figmaUrl)) {
+      emit("Axure 기획서를 읽는 중", JOB_STATUS.fetching);
+      axureSegments = await fetchAxureScreens({
+        baseUrl: figmaUrl,
+        ...(options.axureFetchImpl ? { fetchImpl: options.axureFetchImpl } : {}),
+      });
+      lines = axureSegments.flatMap((screen) => [screen.screenName, ...screen.body.split("\n")]);
+    } else if (specText && !figmaUrl) {
       emit("텍스트 기획서를 읽는 중", JOB_STATUS.fetching);
       lines = linesFromSpec(specText);
     } else if (figmaUrl && figmaToken) {
@@ -111,9 +158,11 @@ export async function runAnalysisJob(options: {
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
       };
       lines = await fetchSpecLines(fetchOpts);
-      image = await fetchSpecImage({ ...fetchOpts, maxSide: visionMaxSide() }).catch(() => null);
+      image = (options.useVision ?? visionEnabled())
+        ? await fetchSpecImage({ ...fetchOpts, maxSide: visionMaxSide() }).catch(() => null)
+        : null;
     } else {
-      return finish(JOB_STATUS.failed, "Figma URL·토큰 또는 텍스트 기획서가 필요합니다.");
+      return finish(JOB_STATUS.failed, "Figma URL·토큰, Axure URL 또는 텍스트 기획서가 필요합니다.");
     }
     if (options.signal.aborted) {
       await options.worker.unload();
@@ -121,7 +170,7 @@ export async function runAnalysisJob(options: {
     }
 
     emit("질문을 나누는 중", JOB_STATUS.planning);
-    let segments = segmentScreens(lines);
+    let segments = axureSegments ?? segmentScreens(lines);
     if (segments.length === 0 && specText)
       segments = [{ screenKey: "screen-1", screenName: "기획서", body: specText }];
     planned = planQuestions(segments);
@@ -160,19 +209,46 @@ export async function runAnalysisJob(options: {
         continue;
       }
       record.status = QUESTION_STATUS.running;
-      emit(`질문 ${index + 1}/${planned.length} 시작 · ${question.screenName}`);
+      const startedAt = Date.now();
+      emit(`질문 ${index + 1}/${planned.length} 시작 · ${question.screenName} · ${describeQuestion(question)}`);
+      if (isDisplayOnlyQuestion(question.text)) {
+        // 조회·표시만 설명하는 질문은 입력이 없다. 모델을 부르면 표 행마다 입력을 지어내며 오래 걸리므로 건너뛴다.
+        answers.push({
+          screenKey: question.screenKey,
+          screenName: question.screenName,
+          inputs: [],
+          successText: "",
+          buttonName: "",
+        });
+        record.status = QUESTION_STATUS.succeeded;
+        record.message = "표시 전용, 모델 호출 생략";
+        emit(`질문 ${index + 1}/${planned.length} 표시 전용 질문, 모델 호출 생략 · ${((Date.now() - startedAt) / 1000).toFixed(1)}초`);
+        continue;
+      }
       const images = image ? [image] : [];
       const hadVision = images.length > 0;
       const worker = hadVision ? visionWorker : textWorker;
+      const visionPrompt = buildQuestionPrompt(question.text, { vision: hadVision });
       let outcome = await askOne({
-        text: buildQuestionPrompt(question.text, { vision: hadVision }),
+        text: visionPrompt,
         spec: specSource,
         images,
         worker,
+        prepare: () => modelSlot.use(worker),
+        ...(options.cache
+          ? {
+              cache: options.cache,
+              cacheKey: questionCacheKey({
+                prompt: visionPrompt,
+                model: hadVision ? visionName : textName,
+                image: image && hadVision ? image : null,
+              }),
+            }
+          : {}),
+        question: question.text,
         timeoutMs,
         parent: options.signal,
       });
-      if (hadVision) await visionWorker.unload().catch(() => undefined);
       const canRetryWithText =
         hadVision &&
         outcome.status === QUESTION_STATUS.failed &&
@@ -184,18 +260,29 @@ export async function runAnalysisJob(options: {
         emit(
           `질문 ${index + 1}/${planned.length} 비전 실패, 텍스트로 재시도 · ${outcome.message}${rawSnippet}`,
         );
+        const textPrompt = buildQuestionPrompt(question.text);
         outcome = await askOne({
-          text: buildQuestionPrompt(question.text),
+          text: textPrompt,
           spec: specSource,
           images: [],
           worker: textWorker,
+          prepare: () => modelSlot.use(textWorker),
+          ...(options.cache
+            ? {
+                cache: options.cache,
+                cacheKey: questionCacheKey({ prompt: textPrompt, model: textName }),
+              }
+            : {}),
+          question: question.text,
           timeoutMs,
           parent: options.signal,
         });
       }
       record.status = outcome.status;
       record.message = outcome.message;
-      emit(`질문 ${index + 1}/${planned.length} ${outcome.log}`);
+      const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+      const cacheNote = options.cache ? (outcome.cached ? " · 캐시 적중" : " · 캐시 없음") : "";
+      emit(`질문 ${index + 1}/${planned.length} ${outcome.log} · ${seconds}초${cacheNote}${describeMetrics(outcome.metrics)}`);
       if (outcome.analysis) {
         answers.push({
           ...outcome.analysis,
@@ -203,7 +290,6 @@ export async function runAnalysisJob(options: {
           screenName: outcome.analysis.screenName || question.screenName,
         });
       }
-      await unloadQuestionWorkers({ hadVision, visionWorker, textWorker });
       if (options.signal.aborted) {
         for (const pending of questions) {
           if (pending.status === QUESTION_STATUS.pending) {
@@ -230,6 +316,9 @@ export async function runAnalysisJob(options: {
       return finish(JOB_STATUS.cancelled, "사용자가 중지했습니다.");
     }
     return finish(JOB_STATUS.failed, message);
+  } finally {
+    // 완료·실패·중지 어느 경우든 분석이 끝나면 올려 둔 모델을 내린다.
+    await modelSlot.release();
   }
 }
 
@@ -238,6 +327,12 @@ async function askOne(options: {
   spec: string;
   images?: string[];
   worker: AnalysisWorker;
+  /** 모델을 실제로 부르기 직전에만 실행한다. 캐시에 있으면 호출되지 않는다. */
+  prepare?: () => Promise<void>;
+  cache?: AnalysisCache;
+  cacheKey?: string;
+  /** 이 질문의 원문. 모델이 지어낸 입력을 걸러내는 기준이 된다. */
+  question: string;
   timeoutMs: number;
   parent: AbortSignal;
 }): Promise<{
@@ -246,6 +341,10 @@ async function askOne(options: {
   log: string;
   analysis?: ScreenAnalysis;
   unload: boolean;
+  /** 모델이 알려 준 단계별 소요. 캐시 응답이면 없다. */
+  metrics?: AskMetrics;
+  /** 모델을 부르지 않고 캐시 응답을 썼는지 */
+  cached: boolean;
   /** 모델이 반환한 원시 문자열 (JSON 파싱 실패 디버깅용) */
   rawResponse?: string;
 }> {
@@ -257,12 +356,23 @@ async function askOne(options: {
   }, options.timeoutMs);
   linkAbort(options.parent, controller);
   let raw = "";
+  let metrics: AskMetrics | undefined;
+  const cachedRaw =
+    options.cache && options.cacheKey ? options.cache.get(options.cacheKey) : null;
   try {
-    raw = await options.worker.ask({
-      text: options.text,
-      ...(options.images?.length ? { images: options.images } : {}),
-      signal: controller.signal,
-    });
+    if (cachedRaw !== null) {
+      raw = cachedRaw;
+    } else {
+      await options.prepare?.();
+      raw = await options.worker.ask({
+        text: options.text,
+        ...(options.images?.length ? { images: options.images } : {}),
+        signal: controller.signal,
+        onMetrics: (value) => {
+          metrics = value;
+        },
+      });
+    }
     clearTimeout(timer);
     if (options.parent.aborted) {
       return {
@@ -270,15 +380,24 @@ async function askOne(options: {
         message: "사용자가 중지했습니다.",
         log: "사용자가 중지했습니다.",
         unload: true,
+        cached: cachedRaw !== null,
       };
     }
-    const analysis = keepSpecWarnings(parseModelJson(raw, "", ""), options.spec);
+    const analysis = keepRealInputs(
+      keepSpecWarnings(parseModelJson(raw, "", ""), options.spec),
+      options.question,
+    );
+    if (cachedRaw === null && options.cache && options.cacheKey) {
+      options.cache.set(options.cacheKey, raw);
+    }
     return {
       status: QUESTION_STATUS.succeeded,
       message: "완료",
-      log: "질문 완료",
+      log: cachedRaw !== null ? "질문 완료 (캐시)" : "질문 완료",
       analysis,
       unload: false,
+      cached: cachedRaw !== null,
+      ...(metrics ? { metrics } : {}),
     };
   } catch (error) {
     clearTimeout(timer);
@@ -288,6 +407,7 @@ async function askOne(options: {
         message: "시간 초과",
         log: "질문 시간 초과, 모델 종료",
         unload: true,
+        cached: cachedRaw !== null,
       };
     }
     if (options.parent.aborted || controller.signal.aborted) {
@@ -296,6 +416,7 @@ async function askOne(options: {
         message: "사용자가 중지했습니다.",
         log: "사용자가 중지했습니다.",
         unload: true,
+        cached: cachedRaw !== null,
       };
     }
     const message = error instanceof Error ? error.message : "질문 실패";
@@ -304,6 +425,7 @@ async function askOne(options: {
       message,
       log: message,
       unload: false,
+      cached: cachedRaw !== null,
       rawResponse: raw || undefined,
     };
   }

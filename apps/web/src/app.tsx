@@ -38,6 +38,7 @@ import {
   type TcFileMeta,
   type TestCase,
 } from "./lib/api";
+import { isAxureUrl } from "./lib/is-axure-url";
 import { decryptSecret, encryptSecret } from "./lib/session-secret";
 
 function statusLabel(runStatus: string): string {
@@ -746,17 +747,17 @@ export function App() {
 
         <div className="flex items-end gap-3">
           <label className="min-w-0 flex-1 space-y-1 text-xs text-slate-400">
-            Figma URL
+            Figma 또는 Axure URL
             <input
               className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
               value={figmaUrl}
               autoComplete="off"
-              placeholder="https://www.figma.com/design/..."
+              placeholder="https://www.figma.com/design/... 또는 https://xxxx.axshare.com/..."
               onChange={(event) => setFigmaUrl(event.target.value)}
             />
           </label>
           <label className="min-w-0 flex-1 space-y-1 text-xs text-slate-400">
-            Figma 토큰
+            Figma 토큰 (Axure는 불필요)
             <input
               className="block w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100"
               type="password"
@@ -801,11 +802,11 @@ export function App() {
        
         <div className="flex gap-2">
           <ActionButton
-            label="피그마 분석"
+            label="기획서 분석"
             variant="primary"
             busy={busyAction === "analyze"}
-            busyLabel="피그마 분석 중…"
-            disabled={isWorking || !figmaUrl || !figmaToken.trim()}
+            busyLabel={isAxureUrl(figmaUrl) ? "엑슈어 기획서 분석 중…" : "피그마 기획서 분석 중…"}
+            disabled={isWorking || !figmaUrl || (!figmaToken.trim() && !isAxureUrl(figmaUrl))}
             onClick={() => void handleAnalyze()}
           />
           <ActionButton
@@ -925,9 +926,9 @@ export function App() {
           </p>
         ) : null}
         {exploreLogs.length > 0 && (
-          <ul className="max-h-32 overflow-y-auto space-y-0.5 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+          <ul className="max-h-96 overflow-y-auto space-y-0.5 rounded border border-slate-800 bg-slate-950 px-2 py-1.5 select-text">
             {exploreLogs.map((log, i) => (
-              <li key={i} className="text-[11px] text-slate-400">{log.message}</li>
+              <li key={i} className="break-all text-[11px] text-slate-400">{log.message}</li>
             ))}
           </ul>
         )}

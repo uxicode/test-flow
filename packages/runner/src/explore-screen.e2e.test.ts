@@ -147,6 +147,71 @@ describe("exploreScreen", () => {
     }
   });
 
+  it("요소가 0개면 화면 상태를 진단해 로그로 남긴다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const page = await ctx.newPage();
+    const logs: string[] = [];
+    try {
+      await page.setContent(`<!DOCTYPE html><html lang="ko"><body>
+        <header><button aria-haspopup="menu">슈퍼관리자님</button></header>
+        <h1>검사 결과 상세</h1><p>수축기 131mmHg</p><div class="pick">2026.10.27</div><div class="skeleton" style="width:50px;height:20px"></div>
+      </body></html>`);
+      const map = await exploreScreen(page, {
+        url: "about:blank",
+        detectDropdowns: false,
+        observeApis: false,
+        onLog: (message) => logs.push(message),
+      });
+      assert.equal(map.elements.length, 0);
+      const diagnosis = logs.find((line) => line.startsWith("0개 원인 진단"));
+      assert.ok(diagnosis, `진단 로그가 있어야 한다. 실제: ${logs.join(" | ")}`);
+      assert.match(diagnosis, /input 0\(보임 0\)/);
+      assert.match(diagnosis, /로딩 표시 1/);
+      assert.ok(logs.some((line) => line.includes("본문 앞부분: 슈퍼관리자님")));
+      assert.ok(
+        logs.some((line) => line.startsWith("후보 요소 · button(") && line.includes("조상:header")),
+        `버튼 후보와 조상이 찍혀야 한다. 실제: ${logs.join(" | ")}`,
+      );
+      assert.ok(
+        logs.some((line) => line.startsWith("후보 요소 · div(class=pick) 글자:2026.10.27")),
+        "날짜 글자가 든 요소도 후보로 찍혀야 한다",
+      );
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
+  it("섹션 머리말(header) 안의 날짜 선택은 수집하고, 사이트 상단 바와 메뉴의 버튼은 수집하지 않는다", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const page = await ctx.newPage();
+    try {
+      await page.setContent(`<!DOCTYPE html><html lang="ko"><body>
+        <div><header><div><button type="button" aria-haspopup="menu">슈퍼관리자님</button><button type="button">로그아웃</button></div></header>
+        <nav><button type="button" aria-expanded="false">통계</button></nav>
+        <main><section>
+          <header>
+            <button type="button">목록으로</button>
+            <div><div><div><button type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="검사일 선택"><span>2026.10.30</span></button></div></div></div>
+          </header>
+        </section></main></div>
+      </body></html>`);
+      const map = await exploreScreen(page, { url: "about:blank", detectDropdowns: false, observeApis: false });
+      const labels = map.elements.map((e) => e.label);
+      const date = map.elements.find((e) => e.label === "검사일 선택");
+      assert.ok(date, `검사일 선택이 수집돼야 한다. 실제: ${labels.join(", ")}`);
+      assert.equal(date.controlKind, CONTROL_KIND.date);
+      assert.ok(!labels.includes("슈퍼관리자님"), "사이트 상단 바 메뉴는 수집하지 않는다");
+      assert.ok(!labels.includes("통계"), "nav 메뉴는 수집하지 않는다");
+      assert.ok(!labels.includes("목록으로"), "일반 버튼은 수집하지 않는다");
+    } finally {
+      await ctx.close();
+      await browser.close();
+    }
+  });
+
   it("뷰포트 오른쪽 바깥에 놓인 필터도 수집한다", async () => {
     const browser = await chromium.launch({ headless: true });
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });

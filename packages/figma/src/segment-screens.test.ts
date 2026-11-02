@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { collectTextLines } from "./figma-node.js";
 import { fetchSpecImage } from "./fetch-image.js";
 import { parseFigmaUrl } from "./parse-figma-url.js";
-import { readFeatureRows, segmentScreens } from "./segment-screens.js";
+import { parseScreenId, readFeatureRows, segmentScreens } from "./segment-screens.js";
 
 describe("parseFigmaUrl", () => {
   it("design URL의 node-id 하이픈을 콜론으로 바꾼다", () => {
@@ -33,6 +33,21 @@ describe("segmentScreens", () => {
       rows.map((row) => row.title),
       ["이메일 입력", "로그인"],
     );
+  });
+});
+
+describe("화면 ID", () => {
+  it("화면 제목에서 ID를 뽑는다", () => {
+    assert.equal(parseScreenId("[MA-002] 홈 메인"), "MA-002");
+    assert.equal(parseScreenId("[PI-001]환자정보"), "PI-001");
+    assert.equal(parseScreenId("[관리자] 로그인"), undefined);
+    assert.equal(parseScreenId("[XX-AP-001]비일만사 전체환자"), undefined);
+  });
+
+  it("segmentScreens가 screenId와 source를 채운다", () => {
+    const [screen] = segmentScreens(["화면 ID", "[MA-002] 홈 메인", "[당일 날짜] 접속일시 기준으로 노출"]);
+    assert.equal(screen?.screenId, "MA-002");
+    assert.equal(screen?.source, "figma");
   });
 });
 

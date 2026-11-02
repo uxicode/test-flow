@@ -9,10 +9,25 @@ const BANNER = "#__testflow_inspect_banner";
 
 let server: http.Server;
 let baseUrl = "";
+let authed = false;
 
 before(async () => {
   server = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html; charset=utf-8");
+    if (req.url === "/auth") {
+      authed = true;
+      res.end("ok");
+      return;
+    }
+    if (req.url === "/protected") {
+      res.end(
+        authed
+          ? `<h1>target</h1><button id="gender" aria-label="성별">성별</button>`
+          : `<form onsubmit="fetch('/auth').then(()=>{location.href='/home'});return false">` +
+              `<input type="text"><input type="password"><button>로그인</button></form>`,
+      );
+      return;
+    }
     if (req.url === "/login") {
       res.end(
         `<form onsubmit="setTimeout(()=>{location.href='/home'},800);return false">` +
@@ -52,6 +67,23 @@ describe("inspectSelector", () => {
     });
     assert.equal(pendingBeforeApply, "#gender");
     assert.equal(result, "#gender");
+  });
+
+  it("로그인 뒤 사이트가 다른 화면으로 보내도 입력한 시작 URL 화면으로 다시 들어간다", async () => {
+    authed = false;
+    let urlAtReady = "";
+    await inspectSelector({
+      startUrl: `${baseUrl}/protected`,
+      login: { email: "a", password: "b" },
+      headless: true,
+      timeoutMs: 20_000,
+      async onReady(page) {
+        await page.waitForSelector(BANNER);
+        urlAtReady = page.url();
+        await applyButton(page, "취소");
+      },
+    });
+    assert.equal(urlAtReady, `${baseUrl}/protected`);
   });
 
   it("다시 선택하면 새로 고른 요소가 적용된다", async () => {

@@ -295,6 +295,79 @@ export interface ExploreOptions {
   observeApis?: boolean;
 }
 
+interface PageProbe {
+  bodyTextLength: number;
+  bodyTextHead: string;
+  inputs: number;
+  visibleInputs: number;
+  buttons: number;
+  visibleButtons: number;
+  selects: number;
+  comboboxes: number;
+  iframes: number;
+  loadingIndicators: number;
+  passwordVisible: boolean;
+  /** 입력 후보로 볼 만한 요소(버튼·콤보박스·날짜 글자가 든 요소)의 태그·속성·조상 */
+  candidates: string[];
+}
+
+/** 요소가 0개일 때 화면이 비었는지, 요소가 숨었는지, 아직 로딩 중인지 가르는 용도. 문자열이라 tsx 변환의 영향을 받지 않는다. */
+const PAGE_PROBE_SCRIPT = `(() => {
+  function visible(el) {
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  var DATE = /\\d{4}[.\\-\\/]\\d{1,2}[.\\-\\/]\\d{1,2}/;
+  function chain(el) {
+    var parts = [];
+    var cur = el.parentElement;
+    while (cur && cur !== document.body && parts.length < 4) {
+      parts.push(cur.tagName.toLowerCase() + (cur.getAttribute("role") ? "[" + cur.getAttribute("role") + "]" : ""));
+      cur = cur.parentElement;
+    }
+    return parts.join("<");
+  }
+  function describe(el) {
+    var attrs = ["role", "aria-haspopup", "aria-expanded", "aria-label", "type", "class"]
+      .map(function (name) {
+        var value = el.getAttribute(name);
+        return value ? name + "=" + value.slice(0, 40) : "";
+      })
+      .filter(Boolean)
+      .join(" ");
+    var text = (el.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 30);
+    return el.tagName.toLowerCase() + "(" + attrs + ") 글자:" + text + " 조상:" + chain(el);
+  }
+  function candidates() {
+    var picked = [];
+    var seen = new Set();
+    document.querySelectorAll("button, [role='button'], [role='combobox'], [aria-haspopup]").forEach(function (el) {
+      if (visible(el) && !seen.has(el)) { seen.add(el); picked.push(describe(el)); }
+    });
+    document.querySelectorAll("div, span, p, label").forEach(function (el) {
+      if (el.children.length > 0 || !visible(el) || seen.has(el)) return;
+      if (DATE.test(el.textContent || "")) { seen.add(el); picked.push(describe(el)); }
+    });
+    return picked.slice(0, 10);
+  }
+  var all = function (sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); };
+  var text = (document.body && document.body.innerText ? document.body.innerText : "").replace(/\\s+/g, " ").trim();
+  return {
+    bodyTextLength: text.length,
+    bodyTextHead: text.slice(0, 80),
+    inputs: all("input").length,
+    visibleInputs: all("input").filter(visible).length,
+    buttons: all("button, [role='button']").length,
+    visibleButtons: all("button, [role='button']").filter(visible).length,
+    selects: all("select").length,
+    comboboxes: all("[role='combobox'], [aria-haspopup]").length,
+    iframes: all("iframe").length,
+    loadingIndicators: all("[class*='loading'], [class*='spinner'], [class*='skeleton'], [aria-busy='true']").filter(visible).length,
+    passwordVisible: all("input[type='password']").some(visible),
+    candidates: candidates()
+  };
+})()`;
+
 export async function exploreScreen(page: Page, options: ExploreOptions): Promise<ScreenElementMap> {
   const log = options.onLog ?? (() => undefined);
   const detectDropdowns = options.detectDropdowns ?? true;
@@ -319,6 +392,19 @@ export async function exploreScreen(page: Page, options: ExploreOptions): Promis
   log("대화형 요소 수집 중...");
   const rawElements = await page.evaluate(COLLECT_ELEMENTS_SCRIPT) as RawElement[];
   log(`${rawElements.length}개 요소 발견`);
+  if (rawElements.length === 0) {
+    const probe = (await page.evaluate(PAGE_PROBE_SCRIPT).catch(() => null)) as PageProbe | null;
+    if (probe) {
+      log(
+        `0개 원인 진단 · 본문 글자 ${probe.bodyTextLength}자 · input ${probe.inputs}(보임 ${probe.visibleInputs}) · ` +
+          `button ${probe.buttons}(보임 ${probe.visibleButtons}) · select ${probe.selects} · ` +
+          `combobox ${probe.comboboxes} · iframe ${probe.iframes} · 로딩 표시 ${probe.loadingIndicators}` +
+          ` · 비밀번호 칸 ${probe.passwordVisible ? "보임(로그인 화면)" : "없음"}`,
+      );
+      log(`본문 앞부분: ${probe.bodyTextHead || "(비어 있음)"}`);
+      for (const candidate of probe.candidates) log(`후보 요소 · ${candidate}`);
+    }
+  }
 
   // 요소별 엔트리 빌드
   const elements: ElementEntry[] = [];

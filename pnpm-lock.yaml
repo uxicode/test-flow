@@ -84,6 +84,25 @@ importers:
 
   packages/analyze:
     dependencies:
+      '@testflow/axure':
+        specifier: workspace:*
+        version: link:../axure
+      '@testflow/figma':
+        specifier: workspace:*
+        version: link:../figma
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.4
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.15
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/axure:
+    dependencies:
       '@testflow/figma':
         specifier: workspace:*
         version: link:../figma

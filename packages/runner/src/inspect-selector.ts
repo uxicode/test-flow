@@ -78,7 +78,11 @@ export function computeOptimalSelector(el: HTMLElement): string {
 
 const DEFAULT_PICK_TIMEOUT_MS = 300_000;
 
-async function loginIfNeeded(page: Page, login: NonNullable<InspectSelectorOptions["login"]>): Promise<void> {
+async function loginIfNeeded(
+  page: Page,
+  login: NonNullable<InspectSelectorOptions["login"]>,
+  startUrl: string,
+): Promise<void> {
   const passwordInput = page.locator('input[type="password"]').first();
   const shown = await passwordInput
     .waitFor({ state: "visible", timeout: 2500 })
@@ -97,8 +101,19 @@ async function loginIfNeeded(page: Page, login: NonNullable<InspectSelectorOptio
   if (!(await loginButton.isVisible().catch(() => false))) return;
   await loginButton.click();
   // 로그인 후 이동이 끝날 때까지 기다린다 (비밀번호 입력란이 사라지면 완료).
-  await passwordInput.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => undefined);
+  const signedIn = await passwordInput
+    .waitFor({ state: "hidden", timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
   await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+  // 로그인 뒤 사이트가 대시보드 등 다른 화면으로 보내므로, 입력한 시작 URL 화면으로 다시 들어간다.
+  if (!signedIn) return;
+  const landedUrl = page.url();
+  await page.goto(startUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+  // 시작 URL이 로그인 페이지 자체였다면 다시 로그인 화면이므로, 로그인 직후 화면으로 되돌린다.
+  if (await passwordInput.isVisible().catch(() => false)) {
+    await page.goto(landedUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+  }
 }
 
 /**
@@ -136,7 +151,7 @@ export async function inspectSelector(options: InspectSelectorOptions): Promise<
     });
 
     await page.goto(options.startUrl, { waitUntil: "domcontentloaded" });
-    if (options.login?.email && options.login.password) await loginIfNeeded(page, options.login);
+    if (options.login?.email && options.login.password) await loginIfNeeded(page, options.login, options.startUrl);
 
     // 이후 이동하는 모든 문서에 UI를 다시 심고, 현재 문서에도 즉시 주입한다.
     await context.addInitScript(INSPECT_BROWSER_SCRIPT);

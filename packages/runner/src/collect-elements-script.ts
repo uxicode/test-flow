@@ -97,11 +97,14 @@ export const COLLECT_ELEMENTS_SCRIPT = `(() => {
     return (el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim();
   }
 
-  var ACTION_TEXT = /^(조회|검색|초기화|리셋|등록|저장|삭제|취소|확인|닫기|적용|추가|수정|편집|다운로드|엑셀|내보내기|업로드|로그아웃|이전|다음|처음|마지막|search|reset|submit|save|delete|cancel|close|apply|add|edit|prev|next)/i;
+  var ACTION_TEXT = /^(조회|검색|초기화|리셋|등록|저장|삭제|취소|확인|닫기|적용|추가|수정|편집|다운로드|엑셀|내보내기|업로드|로그아웃|목록|이전|다음|처음|마지막|search|reset|submit|save|delete|cancel|close|apply|add|edit|prev|next)/i;
 
   /** 팝업(드롭다운·달력)을 여는 버튼인지. 조회·초기화 같은 일반 버튼은 제외한다. */
   function isPopupTrigger(el) {
-    if (el.closest("nav, aside, header")) return false;
+    // 사이트 전체의 메뉴·상단 바 버튼은 입력이 아니다. section/article/main 안의 머리말은 화면의 필터 영역일 수 있어 제외하지 않는다.
+    if (el.closest("nav, aside")) return false;
+    var siteHeader = el.closest("header");
+    if (siteHeader && !siteHeader.closest("section, article, main")) return false;
     var popup = el.getAttribute("aria-haspopup");
     if (popup && popup !== "false") return true;
     if (el.hasAttribute("aria-expanded")) return true;
